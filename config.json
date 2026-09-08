@@ -1,0 +1,26 @@
+{
+  "enabled": true,
+  "dry_run": false,
+  "proxy": "http://127.0.0.1:1082",
+  "check_interval_seconds": 30,
+  "startup_grace_seconds": 45,
+  "failure_window_seconds": 150,
+  "failures_before_switch": 3,
+  "switch_cooldown_seconds": 300,
+  "switch_settle_seconds": 3,
+  "tunnel_recovery_enabled": true,
+  "tunnel_event_lookback_seconds": 300,
+  "tunnel_reconnect_cooldown_seconds": 60,
+  "tunnel_reconnect_settle_seconds": 3,
+  "nodes": [
+    "日本2｜解锁流媒体",
+    "新加坡1｜流媒体解锁",
+    "新加坡2｜流媒体解锁",
+    "德国",
+    "加拿大"
+  ],
+  "initial_node": "日本2｜解锁流媒体",
+  "probe_urls": {
+    "edge": "https://chatgpt.com/cdn-cgi/trace"
+  }
+}

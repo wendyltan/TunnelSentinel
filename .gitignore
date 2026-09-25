@@ -5,3 +5,6 @@ __pycache__/
 # Runtime state; generated locally and not part of the source release.
 guardian.lock
 status.json
+
+# Locally compiled macOS status bar program.
+menubar/TunnelSentinelMenu

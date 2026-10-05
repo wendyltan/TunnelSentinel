@@ -12,6 +12,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
+import plistlib
+import re
 import signal
 import socket
 import subprocess
@@ -23,12 +25,18 @@ from urllib.parse import urlencode, urlparse
 
 
 APP_NAME = "OpenAILinkGuardian"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 DEFAULT_HOME = Path.home() / "Library" / "Application Support" / APP_NAME
 DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 DEFAULT_STATUS = DEFAULT_HOME / "status.json"
 DEFAULT_LOG_DIR = Path.home() / "Library" / "Logs" / APP_NAME
 CODEX_LOG_ROOT = Path.home() / "Library" / "Logs" / "com.openai.codex"
+SHADOWROCKET_PREF_DOMAIN = (
+    Path.home()
+    / "Library/Group Containers/group.com.liguangming.Shadowrocket/Library/Preferences"
+    / "group.com.liguangming.Shadowrocket"
+)
+SHADOWROCKET_NODE_KEY = "group.com.liguangming.SelectedServerName"
 
 DEFAULTS = {
     "enabled": True,
@@ -68,8 +76,14 @@ NETWORK_LOG_MARKERS = (
 PUBSUB_FAILURE_MARKERS = (
     "chatgpt_pubsub_connection_failed",
     "ERR_CONNECTION_CLOSED",
+    "ERR_PROXY_CONNECTION_FAILED",
     "ERR_TUNNEL_CONNECTION_FAILED",
 )
+
+PUBSUB_CLOSE_MARKER = "chatgpt_pubsub_transport_closed"
+PUBSUB_OPEN_MARKER = "chatgpt_pubsub_transport_opened"
+PUBSUB_OUTAGE_SECONDS = 45
+PUBSUB_FAILURE_REPEAT_SECONDS = 30
 
 
 @dataclasses.dataclass(frozen=True)
@@ -207,8 +221,35 @@ def select_shadowrocket_node(node: str, dry_run: bool) -> bool:
         return completed.returncode == 0
     except subprocess.TimeoutExpired:
         # LaunchServices may keep `open` waiting while Shadowrocket has already
-        # applied the URL action. The subsequent network probe is authoritative.
+        # applied the URL action. The selected-node check is authoritative.
         return True
+
+
+def current_shadowrocket_node(timeout: float = 1.0) -> Optional[str]:
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/defaults", "export", str(SHADOWROCKET_PREF_DOMAIN), "-"],
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+        if completed.returncode != 0:
+            return None
+        node = plistlib.loads(completed.stdout).get(SHADOWROCKET_NODE_KEY)
+        return node.strip() if isinstance(node, str) and node.strip() else None
+    except (OSError, plistlib.InvalidFileException, subprocess.TimeoutExpired):
+        return None
+
+
+def wait_for_shadowrocket_node(node: str, timeout: float) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        if current_shadowrocket_node() == node:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.2, remaining))
 
 
 def proxy_endpoint_available(proxy: str, timeout: float = 0.5) -> bool:
@@ -281,6 +322,8 @@ class LogWatcher:
         self.root = root
         self.offsets: dict[str, int] = {}
         self.initialized = False
+        self.pubsub_closed_at: dict[str, float] = {}
+        self.pubsub_last_failure_at: dict[str, float] = {}
 
     def _files(self) -> Iterable[Path]:
         if not self.root.exists():
@@ -300,13 +343,32 @@ class LogWatcher:
             marker in line for marker in PUBSUB_FAILURE_MARKERS[1:]
         )
 
+    def _track_pubsub_transport(self, line: str) -> None:
+        match = re.search(r"rendererWebContentsId=(\d+)", line)
+        renderer = match.group(1) if match else "primary"
+        if PUBSUB_OPEN_MARKER in line:
+            self.pubsub_closed_at.pop(renderer, None)
+            self.pubsub_last_failure_at.pop(renderer, None)
+        elif (
+            PUBSUB_CLOSE_MARKER in line
+            and "windowFocused=true" in line
+            and renderer not in self.pubsub_closed_at
+        ):
+            self.pubsub_closed_at[renderer] = time.monotonic()
+            self.pubsub_last_failure_at.pop(renderer, None)
+
     def read_new_failures(self) -> list[str]:
         failures: list[str] = []
         files = list(self._files())
         if not self.initialized:
             for path in files:
                 try:
-                    self.offsets[str(path)] = path.stat().st_size
+                    size = path.stat().st_size
+                    self.offsets[str(path)] = size
+                    with path.open("rb") as handle:
+                        handle.seek(max(0, size - 65_536))
+                        for line in handle.read().decode("utf-8", errors="replace").splitlines():
+                            self._track_pubsub_transport(line)
                 except OSError:
                     continue
             self.initialized = True
@@ -321,6 +383,7 @@ class LogWatcher:
                 with path.open("r", encoding="utf-8", errors="replace") as handle:
                     handle.seek(offset)
                     for line in handle:
+                        self._track_pubsub_transport(line)
                         if self._is_actionable(line):
                             failures.append(line.strip()[:500])
                     self.offsets[key] = handle.tell()
@@ -328,6 +391,15 @@ class LogWatcher:
                 continue
         active = {str(path) for path in files}
         self.offsets = {path: offset for path, offset in self.offsets.items() if path in active}
+        now = time.monotonic()
+        for renderer, closed_at in self.pubsub_closed_at.items():
+            if (
+                now - closed_at >= PUBSUB_OUTAGE_SECONDS
+                and now - self.pubsub_last_failure_at.get(renderer, 0.0)
+                >= PUBSUB_FAILURE_REPEAT_SECONDS
+            ):
+                failures.append("ChatGPT PubSub transport remained closed for 45 seconds")
+                self.pubsub_last_failure_at[renderer] = now
         return failures
 
 
@@ -346,11 +418,11 @@ class Guardian:
         self.manual_pause = bool(previous_status.get("manual_pause", False))
         nodes = list(config.get("nodes", []))
         previous_node = previous_status.get("current_node")
-        self.current_node = (
-            previous_node
-            if previous_node in nodes
-            else config.get("initial_node") or (nodes[0] if nodes else None)
+        observed_node = current_shadowrocket_node()
+        self.current_node = observed_node or previous_node or config.get("initial_node") or (
+            nodes[0] if nodes else None
         )
+        self.current_node_verified = observed_node is not None
 
     def _load_previous_status(self) -> dict:
         try:
@@ -402,18 +474,32 @@ class Guardian:
             if not select_shadowrocket_node(node, bool(self.config["dry_run"])):
                 self.logger.error("Shadowrocket URL scheme failed node=%s", node)
                 continue
-            time.sleep(float(self.config["switch_settle_seconds"]))
+            if not self.config["dry_run"] and not wait_for_shadowrocket_node(
+                node, float(self.config["switch_settle_seconds"])
+            ):
+                self.current_node_verified = False
+                self.logger.warning("node selection not confirmed node=%s", node)
+                continue
             results = self.probe_all()
             if self.path_is_healthy(results):
                 self.current_node = node
+                self.current_node_verified = not self.config["dry_run"]
                 self.last_switch_at = time.monotonic()
                 self.failure_times.clear()
                 self.logger.warning("failover succeeded node=%s", node)
                 return True
             self.logger.warning("node verification failed node=%s probes=%s", node, self._probe_summary(results))
-        if original and original in nodes and not self.config["dry_run"]:
+        if original and not self.config["dry_run"]:
             select_shadowrocket_node(original, False)
-            self.logger.error("all candidates failed; requested rollback node=%s", original)
+            self.current_node_verified = wait_for_shadowrocket_node(
+                original, float(self.config["switch_settle_seconds"])
+            )
+            self.current_node = original
+            self.logger.error(
+                "all candidates failed; requested rollback node=%s confirmed=%s",
+                original,
+                self.current_node_verified,
+            )
         self.last_switch_at = time.monotonic()
         return False
 
@@ -437,6 +523,7 @@ class Guardian:
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "healthy": healthy,
             "current_node": self.current_node,
+            "current_node_verified": self.current_node_verified,
             "recent_failure_score": len(self.failure_times),
             "new_log_failures": log_failures,
             "last_switch_monotonic": self.last_switch_at,
@@ -484,6 +571,10 @@ class Guardian:
         if not self.config.get("enabled", True):
             self.logger.info("guardian disabled by configuration")
             return True
+        observed_node = current_shadowrocket_node()
+        self.current_node_verified = observed_node is not None
+        if observed_node:
+            self.current_node = observed_node
         proxy_available = proxy_endpoint_available(self.config["proxy"])
         tunnel_stop_reason = "none"
         if not proxy_available:
@@ -578,7 +669,7 @@ class Guardian:
                 self.logger.exception("guardian cycle failed")
             deadline = time.monotonic() + float(self.config["check_interval_seconds"])
             while not self.stop_requested and time.monotonic() < deadline:
-                time.sleep(min(1.0, deadline - time.monotonic()))
+                time.sleep(max(0.0, min(1.0, deadline - time.monotonic())))
         self.logger.info("guardian stopped")
         return 0
 

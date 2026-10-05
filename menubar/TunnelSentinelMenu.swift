@@ -55,14 +55,19 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return result.0 == 0 && result.1.contains("state = running")
     }
 
-    private func readStatus() -> (healthy: Bool, fresh: Bool, node: String) {
+    private func readStatus() -> (healthy: Bool, fresh: Bool, node: String, nodeVerified: Bool) {
         let path = base.appendingPathComponent("status.json").path
         guard let data = FileManager.default.contents(atPath: path),
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        else { return (false, false, "") }
+        else { return (false, false, "", false) }
         let stamp = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date
         let fresh = stamp.map { abs($0.timeIntervalSinceNow) < 120 } ?? false
-        return (json["healthy"] as? Bool ?? false, fresh, json["current_node"] as? String ?? "")
+        return (
+            json["healthy"] as? Bool ?? false,
+            fresh,
+            json["current_node"] as? String ?? "",
+            json["current_node_verified"] as? Bool ?? false
+        )
     }
 
     private func item(_ title: String, _ selector: Selector? = nil) -> NSMenuItem {
@@ -91,8 +96,11 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             !status.fresh ? "状态信息过期 / 等待检测" :
             status.healthy ? "代理链路检测正常" : "代理链路检测异常"
         menu.addItem(item("状态：\(detail)"))
-        if !status.node.isEmpty && !paused {
-            menu.addItem(item("守护记录节点：\(status.node)"))
+        if !paused {
+            let node = running && status.fresh && status.nodeVerified && !status.node.isEmpty
+                ? "Shadowrocket 当前节点：\(status.node)"
+                : "Shadowrocket 当前节点：未知"
+            menu.addItem(item(node))
         }
         menu.addItem(.separator())
         if paused {

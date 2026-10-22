@@ -74,3 +74,11 @@ Always re-check `git status -sb`, HEAD, status.json and running LaunchAgents bef
 - User screenshot shows Shadowrocket `策略` picker lists only built-in policies (`PROXY`, `DIRECT`, `TAILSCALE`, `REJECT` variants), not subscribed Japan/US nodes. This is expected for a group without a bound subscription, NOT evidence subscription is empty.
 - Shadowrocket documentation indicates fallback group editor has separate `订阅` switch which reveals `服务器节点` selector; after choosing a real subscription, its nodes become eligible in the group's strategies. Source: LOWERTOP/Shadowrocket wiki and https://free-nodes.github.io/shadowrocket/shadowrocket_manual.html.
 - Instructed user to return to `OpenAI-Resilience` editor (do not select built-in `PROXY` or save an empty group), scroll to subscription switch, turn it on, choose the relevant current subscription. Next: filter to a small set of existing different-egress JP/US nodes, verify actual entries before saving; then bind the OpenAI/WebSocket domain rules in **inactive** `sr_cnip-copy.conf`. Original active profile untouched.
+
+
+## 2026-10-23 — user manually selected active subscription in inactive fallback editor
+
+- User screenshots **confirm** `OpenAI-Resilience` editing form: `fallback`, 订阅 enabled and 服务器节点 pointing to user's existing subscription. The populated 策略 list shows actual many nodes (HK / Singapore etc.), proving the subscription is selected but also indicating all subscription nodes are included by default.
+- Form exposes 正则 (optional), interval **600 seconds**, timeout **5 seconds**, URL `http://www.gstatic.com/generate_204`. The group is not yet confirmed saved, and its OpenAI routing rules are not yet configured.
+- Current guidance: use optional policy name regex `(?i)(JAPAN 04|JAPAN 14|SEATTLE 05|SAN JOSE 07)` to limit to four previously observed useful candidates, verify resulting filtered names exist. Try 60s interval, 5s timeout, URL `https://chatgpt.com/cdn-cgi/trace`. If regex filters to zero or one node, do NOT save: inspect actual subscription names and adapt. The filter narrows candidates but does not guarantee health.
+- After user verifies filter, save **only in inactive copied** `sr_cnip-copy.conf`, then add actual domain-to-group routing rules; do not activate profile until rule ordering and rollback verified.

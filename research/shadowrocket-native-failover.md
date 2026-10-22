@@ -1,6 +1,6 @@
 # Shadowrocket native failover — non-destructive implementation note
 
-**Status: configuration draft only; NOT enabled on the user's running Mac.** Reviewed 2026-10-22. The exact Shadowrocket macOS UI and routing behavior still require human verification.
+**Status: controlled integration enabled and routing verified 2026-10-23; failure-triggered switching is NOT YET VERIFIED.** The template remains illustrative and is not a complete importable profile. The original `sr_cnip.conf` remains available for rollback.
 
 ## Confirmed live constraints
 
@@ -41,3 +41,14 @@ Avoid indiscriminate `启用回退` on the global `proxy` policy before understa
 ## Acceptance gate
 
 **OPEN**: No live fallback group or OpenAI-specific policy has been installed by this stage. The one required high-impact action is selecting a test copy of the Shadowrocket profile after its rules/candidates have been reviewed. Do not silently alter current traffic routing merely to close a task.
+
+
+## Local live validation — 2026-10-23
+
+- Created `OpenAI-Resilience` inside the inactive `sr_cnip-copy.conf` using Shadowrocket's own editor, with subscription selector, exact regex filter, 60-second interval, 5-second timeout and public OpenAI edge URL.
+- Remapped the **existing first** OpenAI rule-set (blackmatrix7 `OpenAI.list`) from `PROXY` to `OpenAI-Resilience`, preserving the remaining 392 rules.
+- Activated the copied profile through Shadowrocket GUI. New prefs show `sr_cnip-copy.conf-984549565.db`; global selected server remains `🇯🇵 Japan 04`.
+- Shadowrocket Test Rules shows `chatgpt.com`, `ws.chatgpt.com`, `api.openai.com` matching group `OpenAI-Resilience` with chosen group backend `🇺🇸 USA Seattle 05`. This proves route selection even though global node still shows Japan 04.
+- Two edge probes via the local HTTP proxy returned HTTP 200 after the profile switch. This does not prove logged-in WebSocket stability or node-failure recovery timing.
+- Guardian switched to native-owner mode to suppress broken `shadowrocket://select` calls, while retaining tunnel reconnect and diagnostics. **Do not** revert to externally driven rotation while the copy is active.
+- Rollback: within Shadowrocket Config list, select the preserved `sr_cnip.conf` and choose **使用配置**. The private backup made before cutover is under `~/Library/Application Support/OpenAILinkGuardian/backups/native-fallback-before-cutover-20261023-0728/`.

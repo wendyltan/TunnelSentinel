@@ -86,25 +86,24 @@
 
 在 Mac 上运行 <code>./branding/build-assets.sh</code> 可重新生成所有资源。
 
-## 从“检测到故障”到“确认恢复”
+## 从异常检测到恢复
 
-健康检查与恢复是两条不同的证据链：
+TunnelSentinel 把**代理基础链路**、**ChatGPT 客户端错误**和**节点切换权**分开处理。
 
-1. **尽早发现：** 正常时约 30 秒检查一次；连续出现基础链路失败后，临时加密为约 10 秒一次，连续失败达到阈值才进入恢复。
-2. **使用经过验证的候选：** 只考虑最近 72 小时内曾通过基础链路检查的节点。旧配置文件里找不到近期成功记录的节点，不再被盲目轮换；成功记录只代表候选资格，**不代表目前仍可用**。
-3. **核验切换指令：** 发出节点选择指令后，必须确认 Shadowrocket 实际选中了目标节点；再向 ChatGPT 公共入口发起一次全新请求。两个条件全部通过才算恢复。
-4. **失败有边界：** 如果 macOS 未执行节点切换，立即停止本轮连续尝试，避免把所有备用节点依次“假切换”。等待退避后再检查，并报告明确原因。
-5. **保持人工介入入口：** 当软件无法核实节点或节点选择通道不可用时，菜单显示 **AI ! · 自动恢复受阻**，提供“打开 Shadowrocket 手动处理”。
+- 基础网络：正常情况下约每 30 秒检查一次，出现连续失败后约每 10 秒检查一次。
+- 业务层：观察 Cloudflare 验证、HTTP 429、长连接中断等真实客户端错误；这些事件不会单独触发节点切换。
+- **原生故障转移模式**：若 Shadowrocket 的 `fallback` 分组已经在当前规则中正确启用，由 Shadowrocket 自身决定 OpenAI 出口节点，TunnelSentinel 不再发送外部 `shadowrocket://select` 指令，避免双重控制。
+- 传统模式：仍保留有界恢复与候选节点检查，但 macOS 上外部选择指令的成功回执不等于真正切换，不能承诺其一定可用。
+- 全局节点名称与 OpenAI 规则组所选择的实际出口**可能不同**，菜单会明确区分两者。
 
-**无法承诺的部分：** 如果 Shadowrocket 的自动切换入口失效、提供商全部节点不可用，或 OpenAI 服务端返回业务限流/验证错误，TunnelSentinel 不能保证直接修复。它会保留真实的异常状态，而不是显示一个误导性的“正常”。
-
-**增强建议：** 为长期无人值守的使用场景，在 Shadowrocket 自身建立有可用节点、健康探测 URL 与超时设置的 [`fallback` / `url-test` 代理组](https://github.com/LOWERTOP/Shadowrocket/wiki/)，让实际流量走原生自动策略。TunnelSentinel 负责业务日志观察和外层告警。此处不会擅自改写你现有的规则与订阅，因为 Shadowrocket 的节点选择 URL 在某些 macOS 环境中可能没有实际效果。
+> 公共探测 HTTP 200 和分流规则命中均不能替代断网条件下真实切换测试，也不能保证账号限流、Cloudflare 验证或 ChatGPT WebSocket 会自动恢复。
 
 ## 守护流程
 
 ~~~text
 Shadowrocket 本地代理
-    ├─ 公共入口可达性 ──→ 链路健康 ──→ 失败计数 / 谨慎恢复 / 节点轮换
+    ├─ 公共入口可达性 ──→ 链路健康 ──→ 故障告警 / 复核
+    ├─ 原生 fallback 模式 ──→ Shadowrocket 自主选路（不做外部强制换节点）
     └─ ChatGPT / Codex 桌面日志 ──→ 近期业务告警 ──→ 菜单栏诊断
                                              （不触发盲目换节点）
 ~~~
@@ -127,7 +126,9 @@ Shadowrocket 本地代理
 
 为提升无人值守的故障恢复能力，更合适的方案是让 Shadowrocket 自身的 `fallback` 代理组决定每条请求使用哪个节点，而 TunnelSentinel 独立观察链路与 ChatGPT 客户端诊断。这样可以避免额外的节点选择 URL 在 macOS 上失效导致连续盲试。
 
-本仓库提供不包含私密订阅信息的 [fallback 配置片段](examples/shadowrocket-openai-fallback.fragment.conf) 和 [安全启用与回退步骤](research/shadowrocket-native-failover.md)。**这只是待验收草案，当前未对你运行中的 Shadowrocket 路由规则作任何修改**。必须先在应用内核对分组、规则优先级和候选节点，再通过可撤销的测试配置进行真实验证。
+本仓库提供不包含订阅密钥的 [fallback 配置片段](examples/shadowrocket-openai-fallback.fragment.conf) 和 [安全启用与回退步骤](research/shadowrocket-native-failover.md)。安装程序**不会直接修改 Shadowrocket 配置**；分组必须通过 Shadowrocket 自身的配置机制创建，确保规则确实命中再启用。
+
+2026 年 10 月的本地试点已验证：在保留原配置的前提下创建了 `OpenAI-Resilience` 组，启用测试配置后 `chatgpt.com`、`ws.chatgpt.com`、`api.openai.com` 都命中该分组，公共入口测试返回 HTTP 200。**强制使首选节点失效后的自动改选尚未验收**，不可把此次试点当作零中断保证。
 
 ## 配置与事件记录
 

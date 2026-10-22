@@ -9,9 +9,12 @@
 - [x] Menu displays recovery failure and offers open-Shadowrocket action.
 - [x] 菜单栏实时文字与主面板右上角徽标使用同一状态来源（系统菜单栏实时可访问性确认成功；用户视觉验收仍待执行）。
 - [x] Shadowrocket 原生 `fallback` 方案与独立示例片段完成，保留现有 Config 规则，未改动运行配置。
-- [ ] **真实 Shadowrocket fallback 部署受 macOS 权限阻塞**：已通过 Shadowrocket 自己的“复制”功能创建未启用的 `sr_cnip-copy.conf`；已在副本打开 `fallback` 分组编辑器并填写名称 `OpenAI-Resilience`，但尚未添加节点、保存分组或配置匹配规则。22:26 起 System Events 的 `osascript` 连续返回辅助访问拒绝 `-25211`，不要通过替代 API 绕过 macOS 访问控制。恢复所需权限后继续执行、对照原配置检查并在真实业务链路验证后再启用副本。
-- [ ] **Prove automatic node selection on this Mac.** Both background URL scheme and foreground activated URL scheme returned without changing the selected node. Do not claim failover succeeds. Investigate Shadowrocket native fallback/url-test groups or a verified, explicitly approved macOS control path. Do not edit subscription secrets or install competing proxy stacks.
-- [ ] Prove full integration: selected node physically changes and ChatGPT public probe succeeds, then app diagnostics recover after fresh client events.
+- [x] **真实原生 fallback 已启用**：用户在 `sr_cnip-copy.conf` 中绑定订阅并保存 `OpenAI-Resilience`；本次通过 GUI 将已有 OpenAI rule-set 改为 `OpenAI-Resilience` 并启用测试副本，保留原 `sr_cnip.conf`。
+- [x] Shadowrocket 的“测试规则”实测：`chatgpt.com` / `ws.chatgpt.com` / `api.openai.com` 都走 `OpenAI-Resilience`、当前显示 `USA Seattle 05`。
+- [x] 测试副本切换后 ChatGPT 公共入口连续返回 HTTP 200，无需更改原始订阅。
+- [x] Guardian 新增 `native_fallback_enabled`，在原生接管时不再发起旧 URL 节点轮换，并明确全局节点不等于 OpenAI 实际出口。
+- [ ] **P0：失效切换真实验收**。尚未故意使当前出口失效以验证自动改选、恢复耗时及客户端 WebSocket 稳定性。需安排经过许可的可回退故障注入；平时监控不等于此验收。
+- [ ] 长期检查 ChatGPT 客户端、Codex 连接的错误收敛与反复切换风险。
 - [ ] Human visual acceptance of menu recovery state and action.
 
 ## P1 · Operational verification

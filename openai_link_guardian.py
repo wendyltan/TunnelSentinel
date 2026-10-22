@@ -26,7 +26,7 @@ from urllib.parse import urlencode, urlparse
 
 
 APP_NAME = "OpenAILinkGuardian"
-VERSION = "1.4.0"
+VERSION = "1.4.2"
 DEFAULT_HOME = Path.home() / "Library" / "Application Support" / APP_NAME
 DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 DEFAULT_STATUS = DEFAULT_HOME / "status.json"
@@ -53,6 +53,11 @@ DEFAULTS = {
     "failures_before_switch": 3,
     "switch_cooldown_seconds": 300,
     "switch_settle_seconds": 3,
+    # Let Shadowrocket's native fallback group own traffic routing when enabled.
+    # The external selected-server URL scheme is not a reliable node switcher
+    # in recent Shadowrocket/macOS builds. Keep tunnel reconnection independent.
+    "native_fallback_enabled": False,
+    "native_fallback_group": "",
     "tunnel_recovery_enabled": True,
     "tunnel_event_lookback_seconds": 300,
     "tunnel_reconnect_cooldown_seconds": 60,
@@ -619,6 +624,13 @@ class Guardian:
             self.failure_times.popleft()
 
     def should_switch(self) -> bool:
+        # A native Shadowrocket fallback policy controls actual egress nodes.
+        # Never race it with the legacy shadowrocket://select control channel.
+        if self.config.get("native_fallback_enabled", False):
+            if self.failure_times:
+                self.recovery_state = "native_fallback_waiting"
+                self.recovery_reason = "由 Shadowrocket 原生 fallback 接管节点切换；持续检测链路"
+            return False
         now = time.monotonic()
         if not self.current_node_verified and not self.config.get("dry_run", False):
             self.recovery_state = "node_unverified"
@@ -714,6 +726,11 @@ class Guardian:
                 else "attention" if issues else "reachable"
             ),
             "business_status": "attention" if issues else "no_recent_errors",
+            "route_management": ("native_fallback" if self.config.get("native_fallback_enabled", False)
+                                 else "legacy_external_select"),
+            "native_fallback_group": str(self.config.get("native_fallback_group", "")),
+            "current_node_scope": ("shadowrocket_global_selection" if self.config.get("native_fallback_enabled", False)
+                                   else "shadowrocket_selected_server"),
             "recovery_state": self.recovery_state,
             "recovery_reason": self.recovery_reason,
             "recovery_attempt_count": self.recovery_attempt_count,

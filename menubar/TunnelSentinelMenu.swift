@@ -18,6 +18,8 @@ private struct Snapshot {
     var pid: pid_t = 0
     var tunnelState = "unknown"
     var failures = 0
+    var routeManagement = "legacy_external_select"
+    var nativeFallbackGroup = ""
     var recoveryState = "monitoring"
     var recoveryReason = ""
     var recoveryRetrySeconds = 0
@@ -128,6 +130,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         next.pid = pid_t(values["pid"] as? Int ?? 0)
         next.tunnelState = values["tunnel_state"] as? String ?? "unknown"
         next.failures = values["recent_failure_score"] as? Int ?? 0
+        next.routeManagement = values["route_management"] as? String ?? "legacy_external_select"
+        next.nativeFallbackGroup = values["native_fallback_group"] as? String ?? ""
         next.recoveryState = values["recovery_state"] as? String ?? "monitoring"
         next.recoveryReason = values["recovery_reason"] as? String ?? ""
         next.recoveryRetrySeconds = values["recovery_retry_seconds"] as? Int ?? 0
@@ -209,6 +213,10 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return liveNode != snapshot.checkedNode
     }
     private var nodeUnverified: Bool {
+        // Native fallback selects egress independently from the global node.
+        // An unreadable global-node preference is not a network fault and
+        // should not override a passing OpenAI edge + quiet client diagnostics.
+        if snapshot.routeManagement == "native_fallback" { return false }
         return liveNode == nil && !snapshot.nodeVerified
     }
 
@@ -241,6 +249,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         if !snapshot.networkHealthy { return "公共入口不可达 · 等待有界恢复检查" }
         if snapshot.business == "attention" { return "代理可达，但客户端近期报告错误" }
         if nodeUnverified { return "Shadowrocket 节点名读取受限；链路仍在独立监测" }
+        if snapshot.routeManagement == "native_fallback" {
+            return "公共入口可达 · OpenAI 由 Shadowrocket fallback 自动选路"
+        }
         return "公共入口可达 · 业务错误仅通过客户端日志观察"
     }
 
@@ -322,7 +333,10 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         nodeBox.wantsLayer = true
         nodeBox.layer?.cornerRadius = 10
         nodeBox.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        nodeBox.addSubview(label(nodeUnverified ? "SHADOWROCKET · 上次记录" : "SHADOWROCKET · 当前节点",
+        let nodeCaption = snapshot.routeManagement == "native_fallback"
+            ? "SHADOWROCKET · 全局选择（非 OpenAI 实际出口）"
+            : nodeUnverified ? "SHADOWROCKET · 上次记录" : "SHADOWROCKET · 当前节点"
+        nodeBox.addSubview(label(nodeCaption,
                                 font: .systemFont(ofSize: 10, weight: .medium),
                                 color: .secondaryLabelColor,
                                 frame: NSRect(x: 12, y: 38, width: 300, height: 16)))
@@ -383,6 +397,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             String(snapshot.fresh), String(snapshot.networkHealthy),
             String(guardianRunning), String(guardianPaused), String(nodeUnverified),
             statusLabel, menuBarStateMarker,
+            snapshot.routeManagement, snapshot.nativeFallbackGroup,
             snapshot.recoveryState, snapshot.recoveryReason,
             String(snapshot.recoveryRetrySeconds),
             snapshot.issues.map { "\($0.title):\($0.count)" }.joined(separator: "|")

@@ -314,6 +314,26 @@ class GuardianTests(unittest.TestCase):
             switch.assert_not_called()
             self.assertEqual(len(svc.failure_times), 0)
 
+    def test_native_fallback_never_calls_broken_external_selector(self):
+        cfg = dict(guardian.DEFAULTS)
+        cfg["startup_grace_seconds"] = 0
+        cfg["native_fallback_enabled"] = True
+        cfg["native_fallback_group"] = "OpenAI-Resilience"
+        logger = logging.getLogger("native-fallback-owner-test")
+        logger.addHandler(logging.NullHandler())
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = guardian.Guardian(cfg, logger, Path(tmp) / "status.json")
+            svc.failure_times.extend([guardian.time.monotonic()] * 5)
+            with mock.patch.object(svc, "attempt_failover") as rotate:
+                self.assertFalse(svc.should_switch())
+                rotate.assert_not_called()
+            self.assertEqual(svc.recovery_state, "native_fallback_waiting")
+            svc.write_status([guardian.ProbeResult("edge", False, 0, False, 1.0)], 0, False)
+            status = guardian.json.loads((Path(tmp) / "status.json").read_text())
+            self.assertEqual(status["route_management"], "native_fallback")
+            self.assertEqual(status["native_fallback_group"], "OpenAI-Resilience")
+            self.assertEqual(status["current_node_scope"], "shadowrocket_global_selection")
+
     def test_unverified_current_node_blocks_automatic_switch(self):
         cfg = dict(guardian.DEFAULTS)
         cfg["startup_grace_seconds"] = 0

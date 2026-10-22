@@ -18,6 +18,9 @@ private struct Snapshot {
     var pid: pid_t = 0
     var tunnelState = "unknown"
     var failures = 0
+    var recoveryState = "monitoring"
+    var recoveryReason = ""
+    var recoveryRetrySeconds = 0
     var issues: [Issue] = []
 }
 
@@ -125,6 +128,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         next.pid = pid_t(values["pid"] as? Int ?? 0)
         next.tunnelState = values["tunnel_state"] as? String ?? "unknown"
         next.failures = values["recent_failure_score"] as? Int ?? 0
+        next.recoveryState = values["recovery_state"] as? String ?? "monitoring"
+        next.recoveryReason = values["recovery_reason"] as? String ?? ""
+        next.recoveryRetrySeconds = values["recovery_retry_seconds"] as? Int ?? 0
         if let records = values["business_issues"] as? [[String: Any]] {
             next.issues = records.compactMap {
                 guard let title = $0["title"] as? String else { return nil }
@@ -206,11 +212,17 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return liveNode == nil && !snapshot.nodeVerified
     }
 
+    private var recoveryBlocked: Bool {
+        ["no_candidates", "selector_unavailable", "candidate_unhealthy", "node_unverified"]
+            .contains(snapshot.recoveryState)
+    }
+
     private var headline: String {
         if guardianPaused { return "守护已暂停" }
         if !guardianRunning { return "守护服务未运行" }
         if !snapshot.fresh { return "等待最新检测" }
         if nodePending { return "节点已切换，等待检测" }
+        if !snapshot.networkHealthy && recoveryBlocked { return "自动恢复受阻 · 需要处理" }
         if !snapshot.networkHealthy { return "代理链路异常" }
         if nodeUnverified { return "基础网络可达 · 节点未核实" }
         if snapshot.business == "attention" { return "发现业务异常" }
@@ -222,7 +234,11 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         if !guardianRunning { return "后台守护未运行，无法读取实时诊断" }
         if !snapshot.fresh { return "没有足够新的健康检测记录" }
         if nodePending { return "节点名称已同步，新节点的链路健康尚未确认" }
-        if !snapshot.networkHealthy { return "公共入口探测失败，正在按原策略恢复" }
+        if !snapshot.networkHealthy && recoveryBlocked {
+            return snapshot.recoveryReason.isEmpty ? "节点切换未成功，请核查 Shadowrocket" :
+                snapshot.recoveryReason
+        }
+        if !snapshot.networkHealthy { return "公共入口不可达 · 等待有界恢复检查" }
         if snapshot.business == "attention" { return "代理可达，但客户端近期报告错误" }
         if nodeUnverified { return "Shadowrocket 节点名读取受限；链路仍在独立监测" }
         return "公共入口可达 · 业务错误仅通过客户端日志观察"
@@ -278,6 +294,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             nodePending ? "检测中" :
             !snapshot.fresh ? "待检测" :
             nodeUnverified ? "节点未核实" :
+            !snapshot.networkHealthy && recoveryBlocked ? "需人工处理" :
             !snapshot.networkHealthy ? "连接异常" :
             snapshot.business == "attention" ? "需留意" : "基础正常"
         v.addSubview(badge(badgeText, color: accent, frame: NSRect(x: 280, y: 241, width: 78, height: 22)))
@@ -328,7 +345,10 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         divider(43, in: v)
         let timeText = snapshot.checkedAt.count >= 19
             ? String(snapshot.checkedAt.dropFirst(11).prefix(8)) : "—"
-        v.addSubview(label("最近检测 \(timeText)  ·  节点约 2 秒同步",
+        let recoveryText = recoveryBlocked && snapshot.recoveryRetrySeconds > 0
+            ? " · 恢复重试约 \(snapshot.recoveryRetrySeconds / 60) 分钟后"
+            : " · 节点读取受系统权限约束"
+        v.addSubview(label("最近检测 \(timeText)\(recoveryText)",
                            font: .systemFont(ofSize: 10), color: .tertiaryLabelColor,
                            frame: NSRect(x: 20, y: 17, width: 334, height: 18)))
         return v
@@ -347,12 +367,14 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             headline, detail, liveNode ?? "", snapshot.checkedNode, snapshot.checkedAt,
             String(snapshot.fresh), String(snapshot.networkHealthy),
             String(guardianRunning), String(guardianPaused), String(nodeUnverified),
+            snapshot.recoveryState, snapshot.recoveryReason,
+            String(snapshot.recoveryRetrySeconds),
             snapshot.issues.map { "\($0.title):\($0.count)" }.joined(separator: "|")
         ].joined(separator: "::")
         guard fingerprint != lastRenderedState else { return }
         lastRenderedState = fingerprint
         // Allow macOS to choose dark/light contrast for both glyph and label.
-        statusItem.button?.title = "AI"
+        statusItem.button?.title = (recoveryBlocked && !snapshot.networkHealthy) ? "AI !" : "AI"
         statusItem.button?.contentTintColor = nil
         statusItem.button?.toolTip = "\(headline) · \(liveNode ?? snapshot.checkedNode)"
         let menu = NSMenu()
@@ -362,6 +384,10 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(menuItem("立即检查链路", symbol: "arrow.clockwise", action: #selector(forceProbe)))
         menu.addItem(menuItem("查看事件日志", symbol: "list.bullet.rectangle", action: #selector(openLog)))
+        if recoveryBlocked || !snapshot.networkHealthy {
+            menu.addItem(menuItem("打开 Shadowrocket 手动处理", symbol: "network",
+                                  action: #selector(openShadowrocket)))
+        }
         menu.addItem(.separator())
         menu.addItem(menuItem(guardianPaused ? "开启自动守护" : "暂停自动守护",
                               symbol: guardianPaused ? "play.circle" : "pause.circle",
@@ -377,6 +403,17 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         if kill(snapshot.pid, 0) == 0 {
             _ = kill(snapshot.pid, SIGUSR1)
         }
+    }
+
+    @objc private func openShadowrocket() {
+        guard let url = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: "com.liguangming.Shadowrocket") else {
+            showError("未找到 Shadowrocket 应用程序")
+            return
+        }
+        NSWorkspace.shared.openApplication(
+            at: url, configuration: NSWorkspace.OpenConfiguration(),
+            completionHandler: nil)
     }
 
     @objc private func forceProbe() {

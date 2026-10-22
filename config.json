@@ -12,15 +12,13 @@
   "tunnel_event_lookback_seconds": 300,
   "tunnel_reconnect_cooldown_seconds": 60,
   "tunnel_reconnect_settle_seconds": 3,
-  "nodes": [
-    "日本2｜解锁流媒体",
-    "新加坡1｜流媒体解锁",
-    "新加坡2｜流媒体解锁",
-    "德国",
-    "加拿大"
-  ],
-  "initial_node": "日本2｜解锁流媒体",
+  "nodes": [],
+  "initial_node": null,
   "probe_urls": {
     "edge": "https://chatgpt.com/cdn-cgi/trace"
-  }
+  },
+  "fast_check_interval_seconds": 10,
+  "recovery_backoff_seconds": 900,
+  "known_good_max_age_hours": 72,
+  "manual_change_grace_seconds": 30
 }

@@ -255,6 +255,113 @@ class GuardianTests(unittest.TestCase):
             watcher.pubsub_closed_at["1"] -= guardian.PUBSUB_OUTAGE_SECONDS
             self.assertEqual(len(watcher.read_new_failures()), 1)
 
+    def test_known_good_cache_expires_without_restarting_daemon(self):
+        cfg = dict(guardian.DEFAULTS)
+        logger = logging.getLogger("candidate-expiry-test")
+        logger.addHandler(logging.NullHandler())
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = guardian.Guardian(cfg, logger, Path(tmp) / "status.json")
+            svc.learned_good_nodes = ["previously-good"]
+            svc.known_good_cache_updated_at -= 301
+            with mock.patch.object(guardian, "read_known_good_nodes", return_value=[]):
+                self.assertEqual(svc.known_good_candidates(), [])
+
+    def test_stale_config_nodes_are_not_used_for_rotation(self):
+        config = dict(guardian.DEFAULTS)
+        config["nodes"] = ["old-node-A", "old-node-B"]
+        config["dry_run"] = False
+        logger = logging.getLogger("stale-config-test")
+        logger.addHandler(logging.NullHandler())
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(guardian, "current_shadowrocket_node", return_value="offline"):
+                svc = guardian.Guardian(config, logger, Path(tmp) / "status.json")
+            svc.learned_good_nodes = ["Japan 14"]
+            with mock.patch.object(guardian, "select_shadowrocket_node", return_value=True) as select:
+                with mock.patch.object(guardian, "wait_for_shadowrocket_node", return_value=False) as verify:
+                    self.assertFalse(svc.attempt_failover())
+            select.assert_called_once_with("Japan 14", False)
+            verify.assert_called_once()
+            self.assertEqual(svc.recovery_state, "selector_unavailable")
+            self.assertGreater(svc.recovery_retry_at, guardian.time.monotonic())
+
+    def test_no_verified_candidate_does_not_request_any_switch(self):
+        config = dict(guardian.DEFAULTS)
+        config["nodes"] = ["stale-1", "stale-2"]
+        logger = logging.getLogger("no-candidate-test")
+        logger.addHandler(logging.NullHandler())
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = guardian.Guardian(config, logger, Path(tmp) / "status.json")
+            svc.learned_good_nodes = []
+            with mock.patch.object(guardian, "select_shadowrocket_node") as select:
+                self.assertFalse(svc.attempt_failover())
+            select.assert_not_called()
+            self.assertEqual(svc.recovery_state, "no_candidates")
+
+    def test_healthy_probe_ignores_log_errors_for_failover(self):
+        cfg = dict(guardian.DEFAULTS)
+        logger = logging.getLogger("healthy-log-test")
+        logger.addHandler(logging.NullHandler())
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(guardian, "current_shadowrocket_node", return_value="Japan 14"):
+                svc = guardian.Guardian(cfg, logger, Path(tmp) / "status.json")
+                svc.failure_times.extend([guardian.time.monotonic()] * 4)
+                good = guardian.ProbeResult("edge", True, 200, False, .2)
+                with mock.patch.object(guardian, "proxy_endpoint_available", return_value=True), \
+                     mock.patch.object(svc, "probe_all", return_value=[good]), \
+                     mock.patch.object(svc.log_watcher, "read_new_failures", return_value=["ERR_TUNNEL_CONNECTION_FAILED"]), \
+                     mock.patch.object(svc, "attempt_failover") as switch:
+                    self.assertTrue(svc.cycle())
+            switch.assert_not_called()
+            self.assertEqual(len(svc.failure_times), 0)
+
+    def test_unverified_current_node_blocks_automatic_switch(self):
+        cfg = dict(guardian.DEFAULTS)
+        cfg["startup_grace_seconds"] = 0
+        logger = logging.getLogger("unverified-control-test")
+        logger.addHandler(logging.NullHandler())
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = guardian.Guardian(cfg, logger, Path(tmp) / "status.json")
+            svc.current_node_verified = False
+            svc.failure_times.extend([guardian.time.monotonic()] * 5)
+            self.assertFalse(svc.should_switch())
+            self.assertEqual(svc.recovery_state, "node_unverified")
+
+    def test_manual_node_change_suppresses_churn(self):
+        cfg = dict(guardian.DEFAULTS)
+        cfg["startup_grace_seconds"] = 0
+        logger = logging.getLogger("manual-change-test")
+        logger.addHandler(logging.NullHandler())
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(guardian, "current_shadowrocket_node", return_value="old"):
+                svc = guardian.Guardian(cfg, logger, Path(tmp) / "status.json")
+            svc.failure_times.extend([guardian.time.monotonic()] * 4)
+            bad = guardian.ProbeResult("edge", False, 0, False, 1.0)
+            with mock.patch.object(guardian, "current_shadowrocket_node", return_value="user-new"), \
+                 mock.patch.object(guardian, "proxy_endpoint_available", return_value=True), \
+                 mock.patch.object(svc, "probe_all", return_value=[bad]), \
+                 mock.patch.object(svc, "attempt_failover") as switch:
+                self.assertFalse(svc.cycle())
+            switch.assert_not_called()
+            self.assertGreater(svc.manual_override_until, guardian.time.monotonic())
+            self.assertEqual(svc.current_node, "user-new")
+
+    def test_recovery_status_exposes_failed_control_channel(self):
+        cfg = dict(guardian.DEFAULTS)
+        logger = logging.getLogger("status-recovery-test")
+        logger.addHandler(logging.NullHandler())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            svc = guardian.Guardian(cfg, logger, path)
+            svc.learned_good_nodes = ["known"]
+            svc.recovery_state = "selector_unavailable"
+            svc.recovery_reason = "指令已发送，但未切换"
+            svc.recovery_retry_at = guardian.time.monotonic()+600
+            svc.write_status([guardian.ProbeResult("edge",False,0,False,0.5)],0,False)
+            status = guardian.json.loads(path.read_text())
+            self.assertEqual(status["recovery_state"],"selector_unavailable")
+            self.assertGreater(status["recovery_retry_seconds"],590)
+            self.assertEqual(status["known_good_candidates"],["known"])
+
     def test_health_uses_public_edge_without_misreading_unauthorized_challenge(self):
         ok = guardian.ProbeResult("edge", True, 200, False, 0.1)
         self.assertTrue(guardian.Guardian.path_is_healthy([ok]))
@@ -289,6 +396,7 @@ class GuardianTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             with mock.patch.object(guardian, "current_shadowrocket_node", return_value=None):
                 service = guardian.Guardian(config, logger, Path(temp_dir) / "status.json")
+            service.learned_good_nodes = ["b", "c"]
             good = guardian.ProbeResult("edge", True, 200, False, 0.1)
             with mock.patch.object(guardian, "select_shadowrocket_node", return_value=True) as select:
                 with mock.patch.object(guardian, "wait_for_shadowrocket_node", return_value=True):

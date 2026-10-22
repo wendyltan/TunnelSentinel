@@ -26,7 +26,7 @@ from urllib.parse import urlencode, urlparse
 
 
 APP_NAME = "OpenAILinkGuardian"
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 DEFAULT_HOME = Path.home() / "Library" / "Application Support" / APP_NAME
 DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 DEFAULT_STATUS = DEFAULT_HOME / "status.json"
@@ -44,6 +44,10 @@ DEFAULTS = {
     "dry_run": False,
     "proxy": "http://127.0.0.1:1082",
     "check_interval_seconds": 30,
+    "fast_check_interval_seconds": 10,
+    "recovery_backoff_seconds": 900,
+    "manual_change_grace_seconds": 30,
+    "known_good_max_age_hours": 72,
     "startup_grace_seconds": 45,
     "failure_window_seconds": 150,
     "failures_before_switch": 3,
@@ -53,14 +57,10 @@ DEFAULTS = {
     "tunnel_event_lookback_seconds": 300,
     "tunnel_reconnect_cooldown_seconds": 60,
     "tunnel_reconnect_settle_seconds": 3,
-    "nodes": [
-        "日本2｜解锁流媒体",
-        "新加坡1｜流媒体解锁",
-        "新加坡2｜流媒体解锁",
-        "德国",
-        "加拿大",
-    ],
-    "initial_node": "日本2｜解锁流媒体",
+    # Legacy configured names must not be assumed to remain present in Shadowrocket.
+    # Only nodes observed as working may be automatically attempted.
+    "nodes": [],
+    "initial_node": None,
     "probe_urls": {
         "edge": "https://chatgpt.com/cdn-cgi/trace",
     },
@@ -342,6 +342,40 @@ def latest_shadowrocket_stop_reason(lookback_seconds: int) -> str:
     return "unknown"
 
 
+def read_known_good_nodes(path: Path, now: Optional[float] = None,
+                          max_age_hours: float = 72) -> list[str]:
+    """Extract *display names only* from previous successful public edge checks.
+
+    Each candidate still requires exact selection confirmation and a NEW
+    transport probe. This history is not proof that a node is working now.
+    """
+    now = time.time() if now is None else now
+    if max_age_hours <= 0:
+        return []
+    try:
+        with path.open("rb") as handle:
+            handle.seek(max(0, path.stat().st_size - 4_000_000))
+            rows = handle.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    seen: dict[str, float] = {}
+    for row in rows:
+        found = re.match(
+            r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+ INFO health=ok node=(.+?) "
+            r"score=\d+ probes=edge:200:ok", row,
+        )
+        if not found:
+            continue
+        try:
+            stamp = datetime.strptime(found.group(1), "%Y-%m-%d %H:%M:%S").astimezone().timestamp()
+        except ValueError:
+            continue
+        node = found.group(2).strip()
+        if node and len(node) <= 160 and 0 <= now - stamp <= max_age_hours * 3600:
+            seen[node] = max(seen.get(node, 0.0), stamp)
+    return [node for node, _ in sorted(seen.items(), key=lambda item: -item[1])]
+
+
 class LogWatcher:
     def __init__(self, root: Path):
         self.root = root
@@ -493,6 +527,19 @@ class Guardian:
         self.last_switch_at = 0.0
         self.last_tunnel_reconnect_at = 0.0
         self.started_at = time.monotonic()
+        self.recovery_state = "monitoring"
+        self.recovery_reason = ""
+        self.recovery_attempt_count = 0
+        self.recovery_retry_at = 0.0
+        self.manual_override_until = 0.0
+        self.last_probe_results: list[ProbeResult] = []
+        self.healthy_streak_node: Optional[str] = None
+        self.healthy_streak_count = 0
+        self.learned_good_nodes = read_known_good_nodes(
+            DEFAULT_LOG_DIR / "guardian.log",
+            max_age_hours=float(config.get("known_good_max_age_hours", 72)),
+        )
+        self.known_good_cache_updated_at = time.monotonic()
         self.stop_requested = False
         self.refresh_requested = False
         previous_status = self._load_previous_status()
@@ -504,6 +551,39 @@ class Guardian:
             nodes[0] if nodes else None
         )
         self.current_node_verified = observed_node is not None
+
+    def known_good_candidates(self) -> list[str]:
+        # Revalidate age at least every 5 minutes while the daemon is running.
+        # Do not keep a 72-hour-old node forever in memory during long uptime.
+        if time.monotonic() - self.known_good_cache_updated_at > 300:
+            self.learned_good_nodes = read_known_good_nodes(
+                DEFAULT_LOG_DIR / "guardian.log",
+                max_age_hours=float(self.config.get("known_good_max_age_hours", 72)),
+            )
+            self.known_good_cache_updated_at = time.monotonic()
+        # Check supplied names against observed successful names: this prevents
+        # stale subscription names from causing useless changes.
+        # Only names which really passed the public edge within the recent
+        # window are eligible. User configured order is a preference, not proof
+        # that a subscription still contains an old server.
+        observed = list(dict.fromkeys(self.learned_good_nodes))
+        configured = [n for n in self.config.get("nodes", []) if n in observed]
+        return configured + [n for n in observed if n not in configured]
+
+    def note_verified_healthy(self) -> None:
+        node = self.current_node if self.current_node_verified else None
+        if not node:
+            self.healthy_streak_count = 0
+            self.healthy_streak_node = None
+            return
+        if node == self.healthy_streak_node:
+            self.healthy_streak_count += 1
+        else:
+            self.healthy_streak_node = node
+            self.healthy_streak_count = 1
+        if self.healthy_streak_count >= 2 and node not in self.learned_good_nodes:
+            self.learned_good_nodes.insert(0, node)
+            self.logger.info("known-good node learned after two checks node=%s", node)
 
     def _load_previous_status(self) -> dict:
         try:
@@ -540,7 +620,15 @@ class Guardian:
 
     def should_switch(self) -> bool:
         now = time.monotonic()
+        if not self.current_node_verified and not self.config.get("dry_run", False):
+            self.recovery_state = "node_unverified"
+            self.recovery_reason = "无法确认 Shadowrocket 当前节点，禁止盲目切换"
+            return False
         if now - self.started_at < float(self.config["startup_grace_seconds"]):
+            return False
+        if now < self.manual_override_until:
+            return False
+        if now < self.recovery_retry_at:
             return False
         if now - self.last_switch_at < float(self.config["switch_cooldown_seconds"]):
             return False
@@ -548,40 +636,58 @@ class Guardian:
 
     def attempt_failover(self) -> bool:
         original = self.current_node
-        nodes = list(self.config["nodes"])
-        self.logger.warning("failover triggered current_node=%s", original or "unknown")
-        for node in ordered_candidates(nodes, original):
-            self.logger.warning("trying node=%s", node)
-            if not select_shadowrocket_node(node, bool(self.config["dry_run"])):
-                self.logger.error("Shadowrocket URL scheme failed node=%s", node)
-                continue
-            if not self.config["dry_run"] and not wait_for_shadowrocket_node(
-                node, float(self.config["switch_settle_seconds"])
-            ):
-                self.current_node_verified = False
-                self.logger.warning("node selection not confirmed node=%s", node)
-                continue
-            results = self.probe_all()
-            if self.path_is_healthy(results):
-                self.current_node = node
-                self.current_node_verified = not self.config["dry_run"]
-                self.last_switch_at = time.monotonic()
-                self.failure_times.clear()
-                self.logger.warning("failover succeeded node=%s", node)
-                return True
-            self.logger.warning("node verification failed node=%s probes=%s", node, self._probe_summary(results))
-        if original and not self.config["dry_run"]:
-            select_shadowrocket_node(original, False)
-            self.current_node_verified = wait_for_shadowrocket_node(
-                original, float(self.config["switch_settle_seconds"])
-            )
-            self.current_node = original
-            self.logger.error(
-                "all candidates failed; requested rollback node=%s confirmed=%s",
-                original,
-                self.current_node_verified,
-            )
+        nodes = [n for n in self.known_good_candidates() if n != original]
         self.last_switch_at = time.monotonic()
+        self.recovery_attempt_count += 1
+        self.recovery_state = "attempting"
+        self.logger.warning(
+            "recovery attempt=%d from=%s eligible_known_good=%d",
+            self.recovery_attempt_count, original or "unknown", len(nodes),
+        )
+        if not nodes:
+            self.recovery_state = "no_candidates"
+            self.recovery_reason = "没有经过实际健康验证的其他节点；旧配置节点已跳过"
+            self.recovery_retry_at = time.monotonic() + float(
+                self.config.get("recovery_backoff_seconds", 900))
+            self.logger.error("recovery blocked: no verified candidate; no switching requested")
+            return False
+        # A selector that silently fails should not be retried against every
+        # other node: that is a broken *control channel*, not bad proxy nodes.
+        node = nodes[0]
+        self.logger.warning("trying known-good node=%s", node)
+        if not select_shadowrocket_node(node, bool(self.config["dry_run"])):
+            self.recovery_state = "selector_unavailable"
+            self.recovery_reason = "Shadowrocket 选择指令被拒绝"
+        elif not self.config["dry_run"] and not wait_for_shadowrocket_node(
+            node, float(self.config["switch_settle_seconds"])
+        ):
+            self.recovery_state = "selector_unavailable"
+            self.recovery_reason = "指令已发送，但 Shadowrocket 未实际切换节点"
+        else:
+            self.current_node = node
+            self.current_node_verified = not self.config["dry_run"]
+            results = self.probe_all()
+            self.last_probe_results = results
+            if self.path_is_healthy(results):
+                self.failure_times.clear()
+                self.recovery_retry_at = 0.0
+                self.recovery_state = "recovered"
+                self.recovery_reason = "候选节点已通过最新链路检查"
+                self.note_verified_healthy()
+                self.logger.warning("recovery verified node=%s", node)
+                return True
+            self.recovery_state = "candidate_unhealthy"
+            self.recovery_reason = "目标已选中，但目标节点未通过链路检查"
+            if original and not self.config["dry_run"]:
+                select_shadowrocket_node(original, False)
+                self.current_node_verified = wait_for_shadowrocket_node(
+                    original, float(self.config["switch_settle_seconds"]))
+                self.current_node = original
+
+        self.recovery_retry_at = time.monotonic() + float(
+            self.config.get("recovery_backoff_seconds", 900))
+        self.logger.error("recovery stopped state=%s reason=%s; retry deferred",
+                          self.recovery_state, self.recovery_reason)
         return False
 
     @staticmethod
@@ -608,6 +714,11 @@ class Guardian:
                 else "attention" if issues else "reachable"
             ),
             "business_status": "attention" if issues else "no_recent_errors",
+            "recovery_state": self.recovery_state,
+            "recovery_reason": self.recovery_reason,
+            "recovery_attempt_count": self.recovery_attempt_count,
+            "recovery_retry_seconds": max(0, round(self.recovery_retry_at - time.monotonic())),
+            "known_good_candidates": self.known_good_candidates()[:12],
             "business_issues": issues,
             "issue_window_seconds": ISSUE_WINDOW_SECONDS,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -664,6 +775,13 @@ class Guardian:
         observed_node = current_shadowrocket_node()
         self.current_node_verified = observed_node is not None
         if observed_node:
+            if self.current_node and observed_node != self.current_node:
+                self.logger.info("manual or external node change observed node=%s", observed_node)
+                self.failure_times.clear()
+                self.manual_override_until = time.monotonic() + float(
+                    self.config.get("manual_change_grace_seconds", 90))
+                self.recovery_state = "validating"
+                self.recovery_reason = "发现节点变化，等待新节点验证"
             self.current_node = observed_node
         proxy_available = proxy_endpoint_available(self.config["proxy"])
         tunnel_stop_reason = "none"
@@ -728,11 +846,20 @@ class Guardian:
         results = self.probe_all()
         healthy = self.path_is_healthy(results)
         log_failures = self.log_watcher.read_new_failures()
-        failure_weight = 0 if healthy else 1
         if log_failures:
-            failure_weight += min(2, len(log_failures))
             self.logger.warning("new ChatGPT network log failures=%d", len(log_failures))
-        self.record_failures(failure_weight)
+        # Desktop errors are displayed, but cannot independently rotate a
+        # healthy proxy. Bad probes are debounced in the fast-check loop.
+        if healthy:
+            self.failure_times.clear()
+            self.note_verified_healthy()
+            self.recovery_state = "recovered" if self.recovery_state != "monitoring" else "monitoring"
+            self.recovery_reason = ""
+        else:
+            self.record_failures(1)
+            if self.recovery_state not in ("selector_unavailable","no_candidates",
+                                           "candidate_unhealthy"):
+                self.recovery_state = "degraded"
         self.write_status(
             results,
             len(log_failures),
@@ -748,7 +875,13 @@ class Guardian:
             self._probe_summary(results),
         )
         if self.should_switch():
-            return self.attempt_failover()
+            recovered = self.attempt_failover()
+            self.write_status(
+                self.last_probe_results if recovered else results,
+                len(log_failures), recovered, proxy_available=True,
+                tunnel_stop_reason=tunnel_stop_reason,
+            )
+            return recovered
         return healthy
 
     def run(self) -> int:
@@ -757,7 +890,12 @@ class Guardian:
                 self.cycle()
             except Exception:
                 self.logger.exception("guardian cycle failed")
-            deadline = time.monotonic() + float(self.config["check_interval_seconds"])
+            checking_fast = bool(self.failure_times) or self.recovery_state in (
+                "degraded", "validating", "selector_unavailable",
+                "no_candidates", "candidate_unhealthy"
+            )
+            interval = self.config.get("fast_check_interval_seconds", 10) if checking_fast else self.config["check_interval_seconds"]
+            deadline = time.monotonic() + max(3.0, float(interval))
             while not self.stop_requested and time.monotonic() < deadline:
                 if self.refresh_requested:
                     self.refresh_requested = False

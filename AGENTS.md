@@ -9,3 +9,5 @@
 7. A passing compiler/test suite does not equal a successful macOS menu usability check. Require real launch status and user visual acceptance.
 
 8. Menu bar branding must be an `NSImage.isTemplate=true` glyph with native system tint (never set text `contentTintColor` to a fixed color). Branded Finder icon comes from the signed app bundle. Use `branding/build-assets.sh` to regenerate bundled assets and keep README image references valid.
+
+9. Recovery contracts (v1.4): only nodes observed healthy in recent guardian checks are candidates; a URL-scheme return code does not prove a node switch. Abort when a selection is unconfirmed, apply bounded retry backoff, never derive failover solely from ChatGPT desktop errors (429/Cloudflare); require fresh public probe success and confirmed selected node. Display recovery_state/recovery_reason to the user.

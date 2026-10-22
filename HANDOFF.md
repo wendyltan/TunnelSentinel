@@ -17,3 +17,18 @@
 - Replaced README with compact product-style overview, honest status semantics, embedded logo, installation, local-first privacy, defaults, FAQs. No fake screenshot or fake repository link.
 - Verification: icon files generated, Swift build, signed bundle verified, LaunchAgent and guardian both running. Menu real-world contrast and Finder presentation are pending visual acceptance.
 - Next: user visually checks menu status visibility in light/dark menu bar and Finder app icon. Preserve current branch and check Git status/commit before further updates.
+
+
+## Reliability milestone — 2026-10-22
+
+- User requested stronger recovery instead of cosmetic UI, and asked why a new branch was created. No new branch for this stage: retain `feature/tunnelsentinel-health-dashboard-20261022`; it was originally created to protect main per the root AGENTS development guidance, not mandatory for every change.
+- Actual fault: 2026-10-22 20:57 onward, Shadowrocket selected `🇳🇱 Netherlands 01`; GitHub worked but ChatGPT edge and API timed out. Old `config.json` names `日本2｜解锁流媒体` etc no longer matched the current subscription. A carefully bounded URL selection attempt for `🇯🇵 Japan 14` returned success but Shadowrocket's selected server DID NOT change. This indicates selection control path is ineffective, independently of stale names.
+- v1.4 changes: 30s normal / 10s degraded check interval, candidate list from last 72h actually successful guardian log records, two-check learning, skip old unproven names, single candidate per attempted recovery, abort unconfirmed switch with 15m backoff, manual node-change grace, clear false failover score upon healthy probe, no rotation solely from desktop log errors, explicit `recovery_state` / `recovery_reason` / retry seconds in status & menu. A verified fresh public edge probe is required after confirmed selection.
+- Keep user's actual live config backed up. Never promise guaranteed automatic recovery while macOS Shadowrocket URL-scheme selection is unproven. The next meaningful integration step is a controlled investigation of Shadowrocket-native `fallback`/`url-test` groups or a properly permissioned selection method and actual user acceptance. Do not directly edit encrypted Shadowrocket files or subscription secrets.
+- No status of full end-to-end auto-switch as PASS until a real observable node change and new successful public probe are both recorded.
+
+- 2026-10-22 live verification: app activation followed by documented `shadowrocket://select?s=...` also did **not** change the selected server; `🇳🇱 Netherlands 01` remained selected, ChatGPT edge timed out. User-visible recovery cannot be claimed complete.
+- Live v1.4 deployment: guard v1.4.0 and signed menu 1.4.0; newly configured recent names `Japan 14, Seattle 05, San Jose 07, Seattle 01` (actual UTF8 names in live config), original config/backing script/status at `~/Library/Application Support/OpenAILinkGuardian/backups/20261022-pre-recovery-v14/`. Only TunnelSentinel services restarted. On 21:35:03, `recovery_state=selector_unavailable` with explicit message and ~882 seconds of backoff; no more old-name sequence.
+
+- Final bounded test: even foreground `open -a /Applications/Shadowrocket.app shadowrocket://select?s=...` returned exit 0 but selected server did not change. Do not treat any variant of open() success as evidence of a working Mac 2.2.92 selector.
+- 1.4 candidate cache refreshed every 5 minutes from successful guardian log records; expires >72-hour nodes even on long-running daemon. Added test for expiry.

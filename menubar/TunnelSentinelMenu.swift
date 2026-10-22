@@ -244,6 +244,28 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return "公共入口可达 · 业务错误仅通过客户端日志观察"
     }
 
+    // Single source of truth: the compact status badge and the macOS menu bar
+    // must tell users exactly the same state. Keep all state text compact.
+    private var statusLabel: String {
+        if guardianPaused { return "已暂停" }
+        if !guardianRunning { return "离线" }
+        if !snapshot.fresh { return "待检测" }
+        if nodePending { return "检测中" }
+        if !snapshot.networkHealthy && recoveryBlocked { return "需人工处理" }
+        if !snapshot.networkHealthy { return "连接异常" }
+        if snapshot.business == "attention" { return "需留意" }
+        if nodeUnverified { return "节点未核实" }
+        return "基础正常"
+    }
+
+    private var menuBarStateMarker: String {
+        if !snapshot.fresh || guardianPaused || !guardianRunning { return "○" }
+        if nodePending { return "◐" }
+        if !snapshot.networkHealthy || snapshot.business == "attention" { return "!" }
+        if nodeUnverified { return "?" }
+        return "●"
+    }
+
     private var accent: NSColor {
         if guardianPaused || !guardianRunning || !snapshot.fresh { return .secondaryLabelColor }
         if nodePending || snapshot.business == "attention" || nodeUnverified { return .systemOrange }
@@ -289,15 +311,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                            font: .systemFont(ofSize: 10, weight: .bold),
                            color: .tertiaryLabelColor,
                            frame: NSRect(x: 20, y: 244, width: 260, height: 19)))
-        let badgeText = guardianPaused ? "已暂停" :
-            !guardianRunning ? "离线" :
-            nodePending ? "检测中" :
-            !snapshot.fresh ? "待检测" :
-            nodeUnverified ? "节点未核实" :
-            !snapshot.networkHealthy && recoveryBlocked ? "需人工处理" :
-            !snapshot.networkHealthy ? "连接异常" :
-            snapshot.business == "attention" ? "需留意" : "基础正常"
-        v.addSubview(badge(badgeText, color: accent, frame: NSRect(x: 280, y: 241, width: 78, height: 22)))
+        v.addSubview(badge(statusLabel, color: accent,
+                           frame: NSRect(x: 280, y: 241, width: 78, height: 22)))
         v.addSubview(label(headline, font: .systemFont(ofSize: 19, weight: .semibold),
                            color: .labelColor, frame: NSRect(x: 20, y: 207, width: 336, height: 27)))
         v.addSubview(label(detail, font: .systemFont(ofSize: 11.5),
@@ -367,6 +382,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             headline, detail, liveNode ?? "", snapshot.checkedNode, snapshot.checkedAt,
             String(snapshot.fresh), String(snapshot.networkHealthy),
             String(guardianRunning), String(guardianPaused), String(nodeUnverified),
+            statusLabel, menuBarStateMarker,
             snapshot.recoveryState, snapshot.recoveryReason,
             String(snapshot.recoveryRetrySeconds),
             snapshot.issues.map { "\($0.title):\($0.count)" }.joined(separator: "|")
@@ -374,9 +390,11 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         guard fingerprint != lastRenderedState else { return }
         lastRenderedState = fingerprint
         // Allow macOS to choose dark/light contrast for both glyph and label.
-        statusItem.button?.title = (recoveryBlocked && !snapshot.networkHealthy) ? "AI !" : "AI"
+        statusItem.button?.title = "\(menuBarStateMarker) \(statusLabel)"
         statusItem.button?.contentTintColor = nil
-        statusItem.button?.toolTip = "\(headline) · \(liveNode ?? snapshot.checkedNode)"
+        statusItem.button?.toolTip = "TunnelSentinel · \(statusLabel)\n\(headline)\n\(detail)\n节点：\(liveNode ?? snapshot.checkedNode)"
+        statusItem.button?.setAccessibilityLabel("TunnelSentinel，\(statusLabel)")
+        statusItem.button?.setAccessibilityValue("\(headline)；\(detail)")
         let menu = NSMenu()
         let card = NSMenuItem()
         card.view = menuCard()

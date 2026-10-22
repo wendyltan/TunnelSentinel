@@ -47,6 +47,24 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // Template images use the menu bar's native foreground and selection color;
+        // never tint status bar text using NSColor, especially in dark appearance.
+        if let url = Bundle.main.url(forResource: "MenuBarTemplate", withExtension: "png"),
+           let glyph = NSImage(contentsOf: url) {
+            glyph.size = NSSize(width: 18, height: 18)
+            glyph.isTemplate = true
+            statusItem.button?.image = glyph
+            statusItem.button?.imagePosition = .imageLeading
+        } else {
+            let fallback = NSImage(systemSymbolName: "waveform.path", accessibilityDescription: "TunnelSentinel")
+            fallback?.isTemplate = true
+            statusItem.button?.image = fallback
+            statusItem.button?.imagePosition = .imageLeading
+        }
+        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+           let brandIcon = NSImage(contentsOf: url) {
+            NSApp.applicationIconImage = brandIcon
+        }
         statusItem.button?.toolTip = "TunnelSentinel · Shadowrocket / ChatGPT"
         refreshStatus()
         refreshNode()
@@ -333,11 +351,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         ].joined(separator: "::")
         guard fingerprint != lastRenderedState else { return }
         lastRenderedState = fingerprint
-        let marker = (guardianPaused || !guardianRunning || !snapshot.fresh) ? "◌" :
-            nodePending ? "◐" : (!snapshot.networkHealthy ? "●" :
-            snapshot.business == "attention" ? "◕" : "●")
-        statusItem.button?.title = "\(marker) AI"
-        statusItem.button?.contentTintColor = accent
+        // Allow macOS to choose dark/light contrast for both glyph and label.
+        statusItem.button?.title = "AI"
+        statusItem.button?.contentTintColor = nil
         statusItem.button?.toolTip = "\(headline) · \(liveNode ?? snapshot.checkedNode)"
         let menu = NSMenu()
         let card = NSMenuItem()

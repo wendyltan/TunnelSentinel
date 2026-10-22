@@ -32,3 +32,10 @@
 
 - Final bounded test: even foreground `open -a /Applications/Shadowrocket.app shadowrocket://select?s=...` returned exit 0 but selected server did not change. Do not treat any variant of open() success as evidence of a working Mac 2.2.92 selector.
 - 1.4 candidate cache refreshed every 5 minutes from successful guardian log records; expires >72-hour nodes even on long-running daemon. Added test for expiry.
+
+
+## Latest observation — 2026-10-22 21:42 CST
+
+- Shadowrocket externally/manually switched to `🇯🇵 Japan 04` at 21:41:00. Guardian correctly detected the change, reported edge `200` from 21:41:02 onward, reset failure score, and learned Japan 04 after two healthy checks. Do **not** misattribute this switch to TunnelSentinel automation; no automatic node selector succeeded.
+- The same status still reported `overall_status=attention`: 429 rate_limit 2 events (last 21:42:08), pubsub 1 event (21:41:37), layout 6 events (last 21:39:52). Internet baseline recovered, desktop business status not fully verified.
+- Actual status must be rechecked on next session rather than relying on this snapshot. The outstanding milestone is Shadowrocket's genuine native fallback/URL-test routing acceptance or verified automation capability without reading credentials.

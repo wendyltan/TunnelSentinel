@@ -26,3 +26,13 @@ Always re-check `git status -sb`, HEAD, status.json and running LaunchAgents bef
 - `examples/shadowrocket-openai-fallback.fragment.conf`: illustrative snippet, **not a standalone importable full profile**.
 
 **Next:** User review of the live text badge, then an in-app *copied* Shadowrocket policy profile (non-active), with manual verification of its routing matches and explicit permission to activate for controlled testing. Keep both menus and guardian in place throughout.
+
+
+## Actual Shadowrocket in-app attempt — 2026-10-22 ~22:29 CST
+
+- User explicitly requested implementing real failover now. Mac mini Shadowrocket 2.2.92 Config mode, original active profile `sr_cnip.conf` (`CurrentRuleFileName=sr_cnip.db`, 393 UI rule entries), node `🇯🇵 Japan 04`. Public edge health remained `healthy=true`; ChatGPT diagnostic was `attention`.
+- Before any UI edits: created a consistent, PRIVATE read-only recovery backup of original prefs, `sr_cnip.db.rule`, `groups.archive`, and SQLite `rule.db` under `~/Library/Application Support/OpenAILinkGuardian/backups/shadowrocket-before-native-fallback-20261022/` (permissions restricted; do not commit or expose contents).
+- Via Shadowrocket's native UI, successfully **copied** `sr_cnip.conf` into **inactive** `sr_cnip-copy.conf`. Navigated to the copy's `代理分组` editor; opened `添加`, typed name `OpenAI-Resilience`, selected native **fallback** type. These form edits are **UNSAVED**; no candidate nodes selected yet.
+- At strategy picker click, macOS unexpectedly denied `osascript` System Events accessibility with `-25211` several times; a read-only frontmost query still worked, but UI click blocked. Do not bypass OS accessibility permission or edit encrypted/compiled Shadowrocket files.
+- Rechecked active profile: `sr_cnip.db` unchanged; node Japan 04 unchanged; guardian healthy. The user must authorize the appropriate GUI automation accessibility permission in macOS settings (or manually perform the few remaining UI edits) before automated UI work can resume. No live failover is enabled.
+- **One next safe action:** request Accessibility authorization for the app/process controlling Mac GUI in System Settings > Privacy & Security > Accessibility; then continue on the **inactive copy**, add actual known existing nodes, bind OpenAI + WebSocket domain rules above broad rules, save/validate, only activate with rollback and real smoke test.

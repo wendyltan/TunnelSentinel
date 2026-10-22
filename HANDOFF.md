@@ -51,3 +51,11 @@ Always re-check `git status -sb`, HEAD, status.json and running LaunchAgents bef
 - User screenshot System Settings > Privacy & Security > Automation shows Terminal -> System Events enabled and **one** expanded `node` -> System Events enabled. There is a *second distinct* collapsed `node` entry below it, whose System Events permission is not visible. This may be a different executable identity (Remote Desktop Commander process) and needs checking by the user; do not claim certain.
 - Retest with no setting changes: `osascript` read window success; first attempt `click at` returned 0 but screenshot showed unchanged group form; second click attempt returned `-25211` assistive access denied. No group candidate added/saved. Do not bypass TCC via alternative injection. Ask user to expand the second `node` and verify System Events is authorized.
 - Existing unsaved `OpenAI-Resilience` fallback group form remains on strategy/interval/URL section. Current active profile and node must be revalidated before making further changes.
+
+
+## Early-morning retry — 2026-10-23 04:58 CST
+
+- User requested one more attempt while away from Mac. Mac mini remains online and daemon status `healthy=true`, `overall_status=reachable`, `business_status=no_recent_errors`, selected node `🇯🇵 Japan 04`.
+- Shadowrocket process and PacketTunnel are running, but `activate` shows no AX windows (count 0). `screencapture` returned a fully black image.
+- **Verified root blocker:** Swift `CGSessionCopyCurrentDictionary` returned `CGSSessionScreenIsLocked = 1`. Do not unlock the Mac, simulate password entry, alter sleep settings, or change proxy profile while owner sleeps. The unsaved `OpenAI-Resilience` form from previous night is not accessible.
+- Original active config remains `sr_cnip.db`. No new native fallback policy activated or saved. Attempt safely when owner unlocks local desktop. Existing private backup retained.

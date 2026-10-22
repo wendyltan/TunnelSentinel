@@ -1,194 +1,438 @@
 import AppKit
 import Foundation
+import Darwin
+
+private struct Issue {
+    let title: String
+    let count: Int
+}
+
+private struct Snapshot {
+    var fresh = false
+    var networkHealthy = false
+    var overall = "unknown"
+    var business = "no_recent_errors"
+    var checkedNode = ""
+    var nodeVerified = false
+    var checkedAt = ""
+    var pid: pid_t = 0
+    var tunnelState = "unknown"
+    var failures = 0
+    var issues: [Issue] = []
+}
 
 @MainActor
 final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
-    private let label = "com.wuwendi.openai-link-guardian"
+    private let guardianLabel = "com.wuwendi.openai-link-guardian"
     private let base = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/OpenAILinkGuardian")
+    private let preferencePath = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Group Containers/group.com.liguangming.Shadowrocket/Library/Preferences/group.com.liguangming.Shadowrocket").path
+    private let nodePreference = "group.com.liguangming.SelectedServerName"
     private var statusItem: NSStatusItem!
-    private var timer: Timer?
+    private var statusTimer: Timer?
+    private var nodeTimer: Timer?
+    private var nodeLookupBusy = false
+    private var lastNodeReadFailedAt: Date?
+    private var nodeLookupSuspended = false
+    private var liveNode: String?
+    private var snapshot = Snapshot()
+    private var lastRenderedState = ""
+    private var guardianRunning = false
+    private var guardianPaused = false
     private var logWindow: NSWindow?
     private var logTextView: NSTextView?
-    private var logModePicker: NSPopUpButton?
+    private var logPicker: NSPopUpButton?
     private var logSummary: NSTextField?
-
-    private var servicePath: String { "gui/\(getuid())/\(label)" }
-    private var launchPlist: String {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/\(label).plist").path
-    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.toolTip = "TunnelSentinel · ChatGPT / Shadowrocket 网络守护"
-        refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 12, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+        statusItem.button?.toolTip = "TunnelSentinel · Shadowrocket / ChatGPT"
+        refreshStatus()
+        refreshNode()
+        // Status file is produced on a 30-second cycle; node changes are independent.
+        statusTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshStatus() }
+        }
+        nodeTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshNode() }
         }
     }
 
-    private func run(_ arguments: [String]) -> (Int32, String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = arguments
-        let out = Pipe()
-        process.standardOutput = out
-        process.standardError = out
+    private func runLaunchctl(_ arguments: [String]) -> (Int32, String) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        p.arguments = arguments
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
         do {
-            try process.run()
-            let data = out.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            return (process.terminationStatus, String(decoding: data, as: UTF8.self))
-        } catch {
-            return (-1, error.localizedDescription)
-        }
+            try p.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            return (p.terminationStatus, String(decoding: data, as: UTF8.self))
+        } catch { return (-1, error.localizedDescription) }
     }
 
     private func isPaused() -> Bool {
-        let result = run(["print-disabled", "gui/\(getuid())"])
-        return result.1.contains("\"\(label)\" => disabled")
+        runLaunchctl(["print-disabled", "gui/\(getuid())"]).1
+            .contains("\"\(guardianLabel)\" => disabled")
     }
 
     private func isRunning() -> Bool {
-        let result = run(["print", servicePath])
-        return result.0 == 0 && result.1.contains("state = running")
+        let r = runLaunchctl(["print", "gui/\(getuid())/\(guardianLabel)"])
+        return r.0 == 0 && r.1.contains("state = running")
     }
 
-    private func readStatus() -> (healthy: Bool, fresh: Bool, node: String, nodeVerified: Bool) {
-        let path = base.appendingPathComponent("status.json").path
-        guard let data = FileManager.default.contents(atPath: path),
-              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        else { return (false, false, "", false) }
-        let stamp = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date
-        let fresh = stamp.map { abs($0.timeIntervalSinceNow) < 120 } ?? false
-        return (
-            json["healthy"] as? Bool ?? false,
-            fresh,
-            json["current_node"] as? String ?? "",
-            json["current_node_verified"] as? Bool ?? false
-        )
-    }
-
-    private func item(_ title: String, _ selector: Selector? = nil) -> NSMenuItem {
-        let result = NSMenuItem(title: title, action: selector, keyEquivalent: "")
-        if selector != nil { result.target = self }
-        else { result.isEnabled = false }
-        return result
-    }
-
-    private func refresh() {
-        let paused = isPaused()
-        let running = isRunning()
-        let status = readStatus()
-        let headline: String
-        if paused { headline = "AI 暂停" }
-        else if !running { headline = "AI 离线" }
-        else if !status.fresh { headline = "AI 待检" }
-        else if status.healthy { headline = "AI ✓" }
-        else { headline = "AI !" }
-        statusItem.button?.title = headline
-        let menu = NSMenu()
-        menu.addItem(item("TunnelSentinel · 网络守护"))
-        menu.addItem(.separator())
-        let detail = paused ? "已手动暂停守护" :
-            !running ? "守护进程未运行" :
-            !status.fresh ? "状态信息过期 / 等待检测" :
-            status.healthy ? "代理链路检测正常" : "代理链路检测异常"
-        menu.addItem(item("状态：\(detail)"))
-        if !paused {
-            let node = running && status.fresh && status.nodeVerified && !status.node.isEmpty
-                ? "Shadowrocket 当前节点：\(status.node)"
-                : "Shadowrocket 当前节点：未知"
-            menu.addItem(item(node))
+    private func refreshStatus() {
+        let path = base.appendingPathComponent("status.json")
+        guard let bytes = try? Data(contentsOf: path),
+              let values = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any]
+        else {
+            snapshot = Snapshot()
+            guardianPaused = isPaused()
+            guardianRunning = isRunning()
+            rebuildMenu()
+            return
         }
-        menu.addItem(.separator())
-        if paused {
-            menu.addItem(item("开启自动守护", #selector(toggleGuardian)))
+        var next = Snapshot()
+        let changed = (try? path.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        next.fresh = changed.map { Date().timeIntervalSince($0) < 120 } ?? false
+        next.networkHealthy = values["healthy"] as? Bool ?? false
+        next.overall = values["overall_status"] as? String ?? "unknown"
+        next.business = values["business_status"] as? String ?? "no_recent_errors"
+        next.checkedNode = values["current_node"] as? String ?? ""
+        next.nodeVerified = values["current_node_verified"] as? Bool ?? false
+        next.checkedAt = values["updated_at"] as? String ?? ""
+        next.pid = pid_t(values["pid"] as? Int ?? 0)
+        next.tunnelState = values["tunnel_state"] as? String ?? "unknown"
+        next.failures = values["recent_failure_score"] as? Int ?? 0
+        if let records = values["business_issues"] as? [[String: Any]] {
+            next.issues = records.compactMap {
+                guard let title = $0["title"] as? String else { return nil }
+                return Issue(title: title, count: $0["count"] as? Int ?? 1)
+            }
+        }
+        snapshot = next
+        guardianPaused = isPaused()
+        guardianRunning = isRunning()
+        rebuildMenu()
+    }
+
+    private func refreshNode() {
+        guard !nodeLookupBusy && !nodeLookupSuspended else { return }
+        if let last = lastNodeReadFailedAt, Date().timeIntervalSince(last) < 20 { return }
+        nodeLookupBusy = true
+        let domain = preferencePath
+        let key = nodePreference
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+            process.arguments = ["export", domain, "-"]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = Pipe()
+            var value: String?
+            var timedOut = false
+            do {
+                try process.run()
+                // macOS may stall access to Shadowrocket's protected Group Container.
+                // Never block the status menu or leave an unbounded waiting read.
+                let deadline = Date().addingTimeInterval(1.25)
+                while process.isRunning && Date() < deadline {
+                    Thread.sleep(forTimeInterval: 0.05)
+                }
+                if process.isRunning {
+                    timedOut = true
+                    process.terminate()
+                    Thread.sleep(forTimeInterval: 0.1)
+                    if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
+                } else {
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    if process.terminationStatus == 0,
+                       let dict = try PropertyListSerialization.propertyList(from: data, format: nil)
+                            as? [String: Any] {
+                        value = dict[key] as? String
+                    }
+                }
+            } catch { }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.nodeLookupBusy = false
+                // A protected-file access can leave a kernel-stalled helper.
+                // Disable automatic retries until an explicit manual refresh.
+                if timedOut { self.nodeLookupSuspended = true }
+                guard let value, !value.isEmpty else {
+                    self.lastNodeReadFailedAt = Date()
+                    self.rebuildMenu()
+                    return
+                }
+                self.lastNodeReadFailedAt = nil
+                if self.liveNode != value {
+                    let old = self.liveNode
+                    self.liveNode = value
+                    self.rebuildMenu()
+                    if old != nil && value != self.snapshot.checkedNode {
+                        self.requestProbe()
+                    }
+                }
+            }
+        }
+    }
+
+    private var nodePending: Bool {
+        guard let liveNode, !liveNode.isEmpty else { return false }
+        return liveNode != snapshot.checkedNode
+    }
+    private var nodeUnverified: Bool {
+        return liveNode == nil && !snapshot.nodeVerified
+    }
+
+    private var headline: String {
+        if guardianPaused { return "守护已暂停" }
+        if !guardianRunning { return "守护服务未运行" }
+        if !snapshot.fresh { return "等待最新检测" }
+        if nodePending { return "节点已切换，等待检测" }
+        if !snapshot.networkHealthy { return "代理链路异常" }
+        if nodeUnverified { return "基础网络可达 · 节点未核实" }
+        if snapshot.business == "attention" { return "发现业务异常" }
+        return "网络基础链路正常"
+    }
+
+    private var detail: String {
+        if guardianPaused { return "手动暂停状态 · Shadowrocket 未受影响" }
+        if !guardianRunning { return "后台守护未运行，无法读取实时诊断" }
+        if !snapshot.fresh { return "没有足够新的健康检测记录" }
+        if nodePending { return "节点名称已同步，新节点的链路健康尚未确认" }
+        if !snapshot.networkHealthy { return "公共入口探测失败，正在按原策略恢复" }
+        if snapshot.business == "attention" { return "代理可达，但客户端近期报告错误" }
+        if nodeUnverified { return "Shadowrocket 节点名读取受限；链路仍在独立监测" }
+        return "公共入口可达 · 业务错误仅通过客户端日志观察"
+    }
+
+    private var accent: NSColor {
+        if guardianPaused || !guardianRunning || !snapshot.fresh { return .secondaryLabelColor }
+        if nodePending || snapshot.business == "attention" || nodeUnverified { return .systemOrange }
+        return snapshot.networkHealthy ? .systemGreen : .systemRed
+    }
+
+    private func label(_ text: String, font: NSFont, color: NSColor, frame: NSRect,
+                       alignment: NSTextAlignment = .left) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.frame = frame
+        field.font = font
+        field.textColor = color
+        field.alignment = alignment
+        field.maximumNumberOfLines = 1
+        field.lineBreakMode = .byTruncatingTail
+        return field
+    }
+
+    private func divider(_ y: CGFloat, in view: NSView) {
+        let line = NSView(frame: NSRect(x: 20, y: y, width: 336, height: 1))
+        line.wantsLayer = true
+        line.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
+        view.addSubview(line)
+    }
+
+    private func badge(_ text: String, color: NSColor, frame: NSRect) -> NSView {
+        let bg = NSView(frame: frame)
+        bg.wantsLayer = true
+        bg.layer?.cornerRadius = 9
+        bg.layer?.backgroundColor = color.withAlphaComponent(0.13).cgColor
+        bg.addSubview(label(text, font: .systemFont(ofSize: 11, weight: .semibold),
+                            color: color, frame: NSRect(x: 9, y: 1, width: frame.width-18, height: 19),
+                            alignment: .center))
+        return bg
+    }
+
+    private func menuCard() -> NSView {
+        let w: CGFloat = 376
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: 280))
+        v.wantsLayer = true
+        v.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        v.addSubview(label("T U N N E L   S E N T I N E L",
+                           font: .systemFont(ofSize: 10, weight: .bold),
+                           color: .tertiaryLabelColor,
+                           frame: NSRect(x: 20, y: 244, width: 260, height: 19)))
+        let badgeText = guardianPaused ? "已暂停" :
+            !guardianRunning ? "离线" :
+            nodePending ? "检测中" :
+            !snapshot.fresh ? "待检测" :
+            nodeUnverified ? "节点未核实" :
+            !snapshot.networkHealthy ? "连接异常" :
+            snapshot.business == "attention" ? "需留意" : "基础正常"
+        v.addSubview(badge(badgeText, color: accent, frame: NSRect(x: 280, y: 241, width: 78, height: 22)))
+        v.addSubview(label(headline, font: .systemFont(ofSize: 19, weight: .semibold),
+                           color: .labelColor, frame: NSRect(x: 20, y: 207, width: 336, height: 27)))
+        v.addSubview(label(detail, font: .systemFont(ofSize: 11.5),
+                           color: .secondaryLabelColor, frame: NSRect(x: 20, y: 184, width: 337, height: 19)))
+
+        let nodeBox = NSView(frame: NSRect(x: 18, y: 114, width: 340, height: 60))
+        nodeBox.wantsLayer = true
+        nodeBox.layer?.cornerRadius = 10
+        nodeBox.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        nodeBox.addSubview(label(nodeUnverified ? "SHADOWROCKET · 上次记录" : "SHADOWROCKET · 当前节点",
+                                font: .systemFont(ofSize: 10, weight: .medium),
+                                color: .secondaryLabelColor,
+                                frame: NSRect(x: 12, y: 38, width: 300, height: 16)))
+        let nodeName = liveNode ?? (snapshot.nodeVerified
+            ? snapshot.checkedNode : snapshot.checkedNode.isEmpty
+            ? "节点读取受限" : "未核实 · " + snapshot.checkedNode)
+        nodeBox.addSubview(label(nodeName, font: .systemFont(ofSize: 15, weight: .semibold),
+                                color: .labelColor, frame: NSRect(x: 12, y: 9, width: 312, height: 25)))
+        v.addSubview(nodeBox)
+
+        divider(105, in: v)
+        v.addSubview(label("●", font: .systemFont(ofSize: 13), color: snapshot.networkHealthy ? .systemGreen : .systemRed,
+                           frame: NSRect(x: 20, y: 78, width: 16, height: 19)))
+        v.addSubview(label("基础链路", font: .systemFont(ofSize: 12, weight: .medium), color: .labelColor,
+                           frame: NSRect(x: 40, y: 78, width: 126, height: 19)))
+        v.addSubview(label(snapshot.fresh && snapshot.networkHealthy ? "公共入口可达" : "待确认 / 不可达",
+                           font: .systemFont(ofSize: 11), color: .secondaryLabelColor,
+                           frame: NSRect(x: 176, y: 78, width: 180, height: 19), alignment: .right))
+
+        let issueText: String
+        if !snapshot.fresh {
+            issueText = "无最新日志诊断"
+        } else if snapshot.issues.isEmpty {
+            issueText = "近 3 分钟未见已识别错误"
         } else {
-            menu.addItem(item("暂停自动守护（不关闭 Shadowrocket）", #selector(toggleGuardian)))
+            issueText = snapshot.issues.prefix(2).map { "\($0.title) ×\($0.count)" }.joined(separator: " · ")
         }
-        menu.addItem(item("立即刷新状态", #selector(forceRefresh)))
-        menu.addItem(item("查看守护日志", #selector(openLog)))
+        v.addSubview(label("●", font: .systemFont(ofSize: 13), color: snapshot.issues.isEmpty ? .secondaryLabelColor : .systemOrange,
+                           frame: NSRect(x: 20, y: 54, width: 16, height: 19)))
+        v.addSubview(label("客户端诊断", font: .systemFont(ofSize: 12, weight: .medium),
+                           color: .labelColor, frame: NSRect(x: 40, y: 54, width: 105, height: 19)))
+        v.addSubview(label(issueText, font: .systemFont(ofSize: 10.5), color: .secondaryLabelColor,
+                           frame: NSRect(x: 139, y: 54, width: 217, height: 19), alignment: .right))
+
+        divider(43, in: v)
+        let timeText = snapshot.checkedAt.count >= 19
+            ? String(snapshot.checkedAt.dropFirst(11).prefix(8)) : "—"
+        v.addSubview(label("最近检测 \(timeText)  ·  节点约 2 秒同步",
+                           font: .systemFont(ofSize: 10), color: .tertiaryLabelColor,
+                           frame: NSRect(x: 20, y: 17, width: 334, height: 18)))
+        return v
+    }
+
+    private func menuItem(_ title: String, symbol: String, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        return item
+    }
+
+    private func rebuildMenu() {
+        guard let statusItem else { return }
+        let fingerprint = [
+            headline, detail, liveNode ?? "", snapshot.checkedNode, snapshot.checkedAt,
+            String(snapshot.fresh), String(snapshot.networkHealthy),
+            String(guardianRunning), String(guardianPaused), String(nodeUnverified),
+            snapshot.issues.map { "\($0.title):\($0.count)" }.joined(separator: "|")
+        ].joined(separator: "::")
+        guard fingerprint != lastRenderedState else { return }
+        lastRenderedState = fingerprint
+        let marker = (guardianPaused || !guardianRunning || !snapshot.fresh) ? "◌" :
+            nodePending ? "◐" : (!snapshot.networkHealthy ? "●" :
+            snapshot.business == "attention" ? "◕" : "●")
+        statusItem.button?.title = "\(marker) AI"
+        statusItem.button?.contentTintColor = accent
+        statusItem.button?.toolTip = "\(headline) · \(liveNode ?? snapshot.checkedNode)"
+        let menu = NSMenu()
+        let card = NSMenuItem()
+        card.view = menuCard()
+        menu.addItem(card)
         menu.addItem(.separator())
-        menu.addItem(item("退出状态栏图标（守护继续运行）", #selector(quitMenu)))
+        menu.addItem(menuItem("立即检查链路", symbol: "arrow.clockwise", action: #selector(forceProbe)))
+        menu.addItem(menuItem("查看事件日志", symbol: "list.bullet.rectangle", action: #selector(openLog)))
+        menu.addItem(.separator())
+        menu.addItem(menuItem(guardianPaused ? "开启自动守护" : "暂停自动守护",
+                              symbol: guardianPaused ? "play.circle" : "pause.circle",
+                              action: #selector(toggleGuardian)))
+        menu.addItem(menuItem("退出菜单栏（守护继续运行）",
+                              symbol: "xmark.circle", action: #selector(quitMenu)))
         statusItem.menu = menu
     }
 
-    private func showError(_ message: String) {
+    private func requestProbe() {
+        guard guardianRunning, snapshot.fresh, snapshot.pid > 1 else { return }
+        // Only signals a verified live guardian PID from the fresh status file.
+        if kill(snapshot.pid, 0) == 0 {
+            _ = kill(snapshot.pid, SIGUSR1)
+        }
+    }
+
+    @objc private func forceProbe() {
+        nodeLookupSuspended = false
+        lastNodeReadFailedAt = nil
+        requestProbe()
+        refreshStatus()
+        refreshNode()
+    }
+
+    private func showError(_ text: String) {
         let alert = NSAlert()
-        alert.messageText = "TunnelSentinel 操作未完成"
-        alert.informativeText = message
+        alert.messageText = "TunnelSentinel 无法完成操作"
+        alert.informativeText = text
         alert.alertStyle = .warning
         alert.runModal()
     }
 
     @objc private func toggleGuardian() {
-        if isPaused() {
-            let enable = run(["enable", servicePath])
-            if enable.0 != 0 { showError(enable.1); refresh(); return }
+        let name = "gui/\(getuid())/\(guardianLabel)"
+        let plist = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/\(guardianLabel).plist").path
+        if guardianPaused {
+            let enabled = runLaunchctl(["enable", name])
+            if enabled.0 != 0 { showError(enabled.1); refreshStatus(); return }
             if !isRunning() {
-                let boot = run(["bootstrap", "gui/\(getuid())", launchPlist])
-                if boot.0 != 0 { showError(boot.1); refresh(); return }
+                let start = runLaunchctl(["bootstrap", "gui/\(getuid())", plist])
+                if start.0 != 0 { showError(start.1) }
             }
         } else {
-            let disable = run(["disable", servicePath])
-            if disable.0 != 0 { showError(disable.1); refresh(); return }
+            let disabled = runLaunchctl(["disable", name])
+            if disabled.0 != 0 { showError(disabled.1); refreshStatus(); return }
             if isRunning() {
-                let bootout = run(["bootout", servicePath])
-                if bootout.0 != 0 { showError(bootout.1); refresh(); return }
+                let stopped = runLaunchctl(["bootout", name])
+                if stopped.0 != 0 { showError(stopped.1) }
             }
         }
-        refresh()
+        refreshStatus()
     }
 
-    @objc private func forceRefresh() { refresh() }
-
-    // Open logs inside this app; do not expose credentials or open Finder.
     private func logLines(historyOnly: Bool) -> [String] {
         let folder = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/OpenAILinkGuardian")
-        let filenames = historyOnly
-            ? ["guardian.log.2", "guardian.log.1", "guardian.log"]
-            : ["guardian.log"]
+        let names = historyOnly ? ["guardian.log.2", "guardian.log.1", "guardian.log"] : ["guardian.log"]
         let markers = [
-            "failover triggered", "trying node=", "failover succeeded",
-            "node verification failed", "all candidates failed",
-            "Shadowrocket tunnel is down", "requesting reconnect",
-            "tunnel=down", "guardian cycle failed"
+            "failover triggered", "trying node=", "failover succeeded", "node verification failed",
+            "all candidates failed", "Shadowrocket tunnel is down", "requesting reconnect",
+            "tunnel=down", "guardian cycle failed", "new ChatGPT network log failures="
         ]
         var lines: [String] = []
-        for filename in filenames {
-            let url = folder.appendingPathComponent(filename)
+        for name in names {
+            let url = folder.appendingPathComponent(name)
             guard let data = try? Data(contentsOf: url),
                   let content = String(data: data, encoding: .utf8) else { continue }
             let raw = content.components(separatedBy: .newlines)
-            if historyOnly {
-                lines += raw.filter { line in markers.contains { line.contains($0) } }
-            } else {
-                lines += Array(raw.suffix(220))
-            }
+            lines += historyOnly ? raw.filter { row in markers.contains { row.contains($0) } } : Array(raw.suffix(220))
         }
         return Array(lines.filter { !$0.isEmpty }.suffix(220))
     }
 
-    private func safeLogLine(_ line: String) -> String {
-        let pattern = #"(?i)([?&](?:token|key|auth|password|secret)=)[^\s&]+"#
-        return line.replacingOccurrences(
-            of: pattern, with: "$1[redacted]", options: .regularExpression
-        )
-    }
-
     private func refreshLogWindow() {
-        let historical = logModePicker?.indexOfSelectedItem == 1
-        let lines = logLines(historyOnly: historical)
-        logTextView?.string = lines.isEmpty
-            ? "暂无对应日志；可能尚未发生过切换，或日志文件不存在。"
-            : lines.map(safeLogLine).joined(separator: "\n")
+        let historical = logPicker?.indexOfSelectedItem == 1
+        let rows = logLines(historyOnly: historical)
+        let pattern = #"(?i)([?&](?:token|key|auth|password|secret)=)[^\s&]+"#
+        logTextView?.string = rows.isEmpty
+            ? "暂无相关事件。网络守护仍在运行，最近没有记录到该类型的日志。"
+            : rows.map { $0.replacingOccurrences(of: pattern, with: "$1[redacted]",
+                                                  options: .regularExpression) }.joined(separator: "\n")
         logTextView?.scrollToEndOfDocument(nil)
         logSummary?.stringValue = historical
-            ? "从当前日志及两份轮转日志中筛选最多 220 条切换/异常记录。"
-            : "显示最近最多 220 条日志；每次点击“刷新”重新读取。"
+            ? "仅列出切换、连接失败及恢复事件 · 最近 220 条"
+            : "守护进程运行记录 · 最近 220 条 · 不包含聊天内容"
     }
 
     @objc private func changeLogMode(_ sender: NSPopUpButton) { refreshLogWindow() }
@@ -201,58 +445,66 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 590),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "TunnelSentinel · 守护日志"
-        window.minSize = NSSize(width: 640, height: 360)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 565),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                              backing: .buffered, defer: false)
+        window.title = "TunnelSentinel · 事件记录"
+        window.minSize = NSSize(width: 600, height: 360)
         window.isReleasedWhenClosed = false
         window.center()
-
         guard let content = window.contentView else { return }
-        let picker = NSPopUpButton(frame: NSRect(x: 16, y: 543, width: 260, height: 28))
-        picker.addItems(withTitles: ["最近日志", "切换与异常历史"])
+        let background = NSVisualEffectView(frame: content.bounds)
+        background.material = .windowBackground
+        background.blendingMode = .withinWindow
+        background.autoresizingMask = [.width, .height]
+        content.addSubview(background)
+        let topTitle = label("网络事件", font: .systemFont(ofSize: 22, weight: .semibold),
+                             color: .labelColor, frame: NSRect(x: 22, y: 508, width: 275, height: 31))
+        topTitle.autoresizingMask = [.minYMargin]
+        background.addSubview(topTitle)
+        let desc = label("连接状态、自动恢复与诊断记录",
+                         font: .systemFont(ofSize: 12), color: .secondaryLabelColor,
+                         frame: NSRect(x: 22, y: 486, width: 340, height: 19))
+        desc.autoresizingMask = [.minYMargin]
+        background.addSubview(desc)
+        let picker = NSPopUpButton(frame: NSRect(x: 535, y: 499, width: 195, height: 27))
+        picker.addItems(withTitles: ["最近运行日志", "异常与切换"])
         picker.target = self
         picker.action = #selector(changeLogMode(_:))
-        picker.autoresizingMask = [.minYMargin]
-        content.addSubview(picker)
-        logModePicker = picker
-
-        let refresh = NSButton(frame: NSRect(x: 780, y: 543, width: 102, height: 28))
-        refresh.title = "刷新日志"
+        picker.autoresizingMask = [.minXMargin, .minYMargin]
+        background.addSubview(picker)
+        logPicker = picker
+        let refresh = NSButton(frame: NSRect(x: 734, y: 499, width: 105, height: 28))
+        refresh.title = "刷新"
         refresh.bezelStyle = .rounded
         refresh.target = self
         refresh.action = #selector(refreshLog(_:))
         refresh.autoresizingMask = [.minXMargin, .minYMargin]
-        content.addSubview(refresh)
+        background.addSubview(refresh)
 
-        let scroll = NSScrollView(frame: NSRect(x: 16, y: 48, width: 868, height: 482))
+        let scroll = NSScrollView(frame: NSRect(x: 22, y: 52, width: 816, height: 418))
         scroll.hasVerticalScroller = true
-        scroll.hasHorizontalScroller = true
         scroll.autohidesScrollers = true
-        scroll.borderType = .bezelBorder
+        scroll.borderType = .noBorder
+        scroll.wantsLayer = true
+        scroll.layer?.cornerRadius = 10
+        scroll.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
         scroll.autoresizingMask = [.width, .height]
         let textView = NSTextView(frame: scroll.bounds)
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = false
         textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        textView.textContainerInset = NSSize(width: 8, height: 8)
-        textView.isHorizontallyResizable = true
-        textView.textContainer?.widthTracksTextView = false
-        textView.textContainer?.containerSize = NSSize(width: 2500, height: CGFloat.greatestFiniteMagnitude)
+        textView.textColor = .labelColor
+        textView.textContainerInset = NSSize(width: 14, height: 12)
         scroll.documentView = textView
-        content.addSubview(scroll)
+        background.addSubview(scroll)
         logTextView = textView
-
-        let summary = NSTextField(labelWithString: "")
-        summary.frame = NSRect(x: 16, y: 14, width: 868, height: 22)
-        summary.autoresizingMask = [.width]
-        content.addSubview(summary)
-        logSummary = summary
+        let footer = label("", font: .systemFont(ofSize: 11), color: .secondaryLabelColor,
+                           frame: NSRect(x: 22, y: 21, width: 810, height: 18))
+        footer.autoresizingMask = [.width]
+        background.addSubview(footer)
+        logSummary = footer
         logWindow = window
         refreshLogWindow()
         window.makeKeyAndOrderFront(nil)

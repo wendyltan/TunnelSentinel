@@ -10,6 +10,10 @@ build_dir="$(/usr/bin/mktemp -d "$install_dir/.tunnelsentinel-build.XXXXXX")"
 trap '/bin/rm -rf "$build_dir"' EXIT
 /usr/bin/swiftc -parse-as-library -O -framework AppKit \
   "$project_dir/menubar/TunnelSentinelMenu.swift" -o "$build_dir/TunnelSentinelMenu"
+# A stable code-signing identity is required for launchd on recent macOS.
+# Sign the finished binary BEFORE replacing the running menu executable.
+/usr/bin/codesign --force --sign - --identifier TunnelSentinelMenu "$build_dir/TunnelSentinelMenu"
+/usr/bin/codesign --verify "$build_dir/TunnelSentinelMenu"
 chmod 755 "$build_dir/TunnelSentinelMenu"
 /usr/bin/python3 - "$agent_path" "$binary" "$log_dir" <<'PY'
 from pathlib import Path

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import collections
 import dataclasses
+from datetime import datetime
 import fcntl
 import json
 import logging
@@ -25,7 +26,7 @@ from urllib.parse import urlencode, urlparse
 
 
 APP_NAME = "OpenAILinkGuardian"
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 DEFAULT_HOME = Path.home() / "Library" / "Application Support" / APP_NAME
 DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 DEFAULT_STATUS = DEFAULT_HOME / "status.json"
@@ -84,6 +85,14 @@ PUBSUB_CLOSE_MARKER = "chatgpt_pubsub_transport_closed"
 PUBSUB_OPEN_MARKER = "chatgpt_pubsub_transport_opened"
 PUBSUB_OUTAGE_SECONDS = 45
 PUBSUB_FAILURE_REPEAT_SECONDS = 30
+ISSUE_WINDOW_SECONDS = 180
+ISSUE_LABELS = {
+    "cloudflare": "ChatGPT 安全验证",
+    "rate_limit": "ChatGPT 请求受限",
+    "connection": "ChatGPT 连接中断",
+    "pubsub": "消息推送持续断开",
+    "layout": "客户端布局异常",
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -225,7 +234,9 @@ def select_shadowrocket_node(node: str, dry_run: bool) -> bool:
         return True
 
 
-def current_shadowrocket_node(timeout: float = 1.0) -> Optional[str]:
+def current_shadowrocket_node(timeout: float = 2.0) -> Optional[str]:
+    # Prefer CFPreferences state. A launchd agent can occasionally fail to
+    # export that domain even when the on-disk group preference is readable.
     try:
         completed = subprocess.run(
             ["/usr/bin/defaults", "export", str(SHADOWROCKET_PREF_DOMAIN), "-"],
@@ -233,12 +244,26 @@ def current_shadowrocket_node(timeout: float = 1.0) -> Optional[str]:
             check=False,
             timeout=timeout,
         )
-        if completed.returncode != 0:
-            return None
-        node = plistlib.loads(completed.stdout).get(SHADOWROCKET_NODE_KEY)
-        return node.strip() if isinstance(node, str) and node.strip() else None
+        if completed.returncode == 0:
+            node = plistlib.loads(completed.stdout).get(SHADOWROCKET_NODE_KEY)
+            if isinstance(node, str) and node.strip():
+                return node.strip()
+        logging.getLogger(APP_NAME).debug("Shadowrocket defaults export exit=%s", completed.returncode)
+    except (OSError, plistlib.InvalidFileException, subprocess.TimeoutExpired) as error:
+        logging.getLogger(APP_NAME).debug("Shadowrocket defaults export failed type=%s", type(error).__name__)
+    # Read via a bounded child process rather than blocking the guardian thread:
+    # macOS may stall direct access to another app's Group Container.
+    try:
+        fallback = subprocess.run(
+            ["/bin/cat", str(SHADOWROCKET_PREF_DOMAIN) + ".plist"],
+            capture_output=True, check=False, timeout=1.0,
+        )
+        if fallback.returncode == 0:
+            node = plistlib.loads(fallback.stdout).get(SHADOWROCKET_NODE_KEY)
+            return node.strip() if isinstance(node, str) and node.strip() else None
     except (OSError, plistlib.InvalidFileException, subprocess.TimeoutExpired):
-        return None
+        pass
+    return None
 
 
 def wait_for_shadowrocket_node(node: str, timeout: float) -> bool:
@@ -324,6 +349,45 @@ class LogWatcher:
         self.initialized = False
         self.pubsub_closed_at: dict[str, float] = {}
         self.pubsub_last_failure_at: dict[str, float] = {}
+        self.issue_events: Deque[tuple[float, str]] = collections.deque(maxlen=1000)
+
+    @staticmethod
+    def classify_issue(line: str) -> Optional[str]:
+        """Describe actual desktop-app failures, without treating them as proxy failures."""
+        if "cloudflare_challenge" in line:
+            return "cloudflare"
+        if any(marker in line for marker in (
+            "Too many requests", "fetch failed (429)", "HTTP 429"
+        )):
+            return "rate_limit"
+        if "ERR_CONNECTION_CLOSED" in line or "ERR_PROXY_CONNECTION_FAILED" in line:
+            return "connection"
+        if "ResizeObserver loop completed with undelivered notifications" in line:
+            return "layout"
+        return None
+
+    def issue_summary(self) -> list[dict]:
+        now = time.time()
+        while self.issue_events and now - self.issue_events[0][0] > ISSUE_WINDOW_SECONDS:
+            self.issue_events.popleft()
+        groups: dict[str, list[float]] = {}
+        for timestamp, category in self.issue_events:
+            groups.setdefault(category, []).append(timestamp)
+        # A solitary layout warning is routine; repeated warnings are actionable UX evidence.
+        return sorted(
+            (
+                {
+                    "category": kind,
+                    "title": ISSUE_LABELS[kind],
+                    "count": len(events),
+                    "last_seen": max(events),
+                }
+                for kind, events in groups.items()
+                if kind != "layout" or len(events) >= 3
+            ),
+            key=lambda item: item["last_seen"],
+            reverse=True,
+        )[:5]
 
     def _files(self) -> Iterable[Path]:
         if not self.root.exists():
@@ -369,6 +433,18 @@ class LogWatcher:
                         handle.seek(max(0, size - 65_536))
                         for line in handle.read().decode("utf-8", errors="replace").splitlines():
                             self._track_pubsub_transport(line)
+                            # Recover only recent app warnings on daemon restart. Never
+                            # count historical events toward automatic node switching.
+                            category = self.classify_issue(line)
+                            if category:
+                                match = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)", line)
+                                if match:
+                                    try:
+                                        seen = datetime.fromisoformat(match.group(1).replace("Z", "+00:00")).timestamp()
+                                    except ValueError:
+                                        continue
+                                    if 0 <= time.time() - seen <= ISSUE_WINDOW_SECONDS:
+                                        self.issue_events.append((seen, category))
                 except OSError:
                     continue
             self.initialized = True
@@ -384,6 +460,9 @@ class LogWatcher:
                     handle.seek(offset)
                     for line in handle:
                         self._track_pubsub_transport(line)
+                        category = self.classify_issue(line)
+                        if category:
+                            self.issue_events.append((time.time(), category))
                         if self._is_actionable(line):
                             failures.append(line.strip()[:500])
                     self.offsets[key] = handle.tell()
@@ -399,6 +478,7 @@ class LogWatcher:
                 >= PUBSUB_FAILURE_REPEAT_SECONDS
             ):
                 failures.append("ChatGPT PubSub transport remained closed for 45 seconds")
+                self.issue_events.append((time.time(), "pubsub"))
                 self.pubsub_last_failure_at[renderer] = now
         return failures
 
@@ -414,6 +494,7 @@ class Guardian:
         self.last_tunnel_reconnect_at = 0.0
         self.started_at = time.monotonic()
         self.stop_requested = False
+        self.refresh_requested = False
         previous_status = self._load_previous_status()
         self.manual_pause = bool(previous_status.get("manual_pause", False))
         nodes = list(config.get("nodes", []))
@@ -518,8 +599,17 @@ class Guardian:
         proxy_available: bool = True,
         tunnel_stop_reason: str = "none",
     ) -> None:
+        issues = self.log_watcher.issue_summary()
         payload = {
             "version": VERSION,
+            "pid": os.getpid(),
+            "overall_status": (
+                "offline" if not healthy or not proxy_available
+                else "attention" if issues else "reachable"
+            ),
+            "business_status": "attention" if issues else "no_recent_errors",
+            "business_issues": issues,
+            "issue_window_seconds": ISSUE_WINDOW_SECONDS,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "healthy": healthy,
             "current_node": self.current_node,
@@ -669,6 +759,9 @@ class Guardian:
                 self.logger.exception("guardian cycle failed")
             deadline = time.monotonic() + float(self.config["check_interval_seconds"])
             while not self.stop_requested and time.monotonic() < deadline:
+                if self.refresh_requested:
+                    self.refresh_requested = False
+                    break
                 time.sleep(max(0.0, min(1.0, deadline - time.monotonic())))
         self.logger.info("guardian stopped")
         return 0
@@ -708,6 +801,7 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGUSR1, lambda _signal, _frame: setattr(guardian, "refresh_requested", True))
     logger.info("guardian started version=%s dry_run=%s", VERSION, bool(config["dry_run"]))
     try:
         if args.once:

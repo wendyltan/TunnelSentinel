@@ -13,6 +13,100 @@ class GuardianTests(unittest.TestCase):
         self.assertTrue(guardian.is_cloudflare_challenge("", "Enable JavaScript and cookies to continue"))
         self.assertFalse(guardian.is_cloudflare_challenge("content-type: application/json", "{}"))
 
+    def test_real_desktop_errors_are_classified_without_failover(self):
+        cases = {
+            "cloudflare_challenge": "cloudflare",
+            'Thread catalog sync failed errorMessage="Authenticated desktop fetch failed (429)"': "rate_limit",
+            'sa_server_request_failed errorMessage="Too many requests"': "rate_limit",
+            "sa_server_request_failed net::ERR_CONNECTION_CLOSED": "connection",
+            "ResizeObserver loop completed with undelivered notifications": "layout",
+        }
+        for line, category in cases.items():
+            with self.subTest(category=category):
+                self.assertEqual(guardian.LogWatcher.classify_issue(line), category)
+                self.assertFalse(guardian.LogWatcher._is_actionable(line))
+
+    def test_real_error_events_surface_in_status_without_proxy_switch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            log_dir = path / "logs" / "2026" / "10" / "22"
+            log_dir.mkdir(parents=True)
+            log_file = log_dir / "desktop.log"
+            log_file.write_text("baseline\n", encoding="utf-8")
+            watcher = guardian.LogWatcher(path / "logs")
+            self.assertEqual(watcher.read_new_failures(), [])
+            with log_file.open("a", encoding="utf-8") as out:
+                out.write("sa_server_request_failed errorCode=cloudflare_challenge\n")
+                out.write('Authenticated desktop fetch failed (429)\n')
+                out.write("ResizeObserver loop completed with undelivered notifications\n" * 3)
+            self.assertEqual(watcher.read_new_failures(), [])
+            categories = {issue["category"] for issue in watcher.issue_summary()}
+            self.assertEqual(categories, {"cloudflare", "rate_limit", "layout"})
+            config = dict(guardian.DEFAULTS)
+            logger = logging.getLogger("issue-status-test")
+            logger.addHandler(logging.NullHandler())
+            with mock.patch.object(guardian, "current_shadowrocket_node", return_value="node"):
+                service = guardian.Guardian(config, logger, path / "status.json")
+            service.log_watcher = watcher
+            good = guardian.ProbeResult("edge", True, 200, False, .3)
+            with mock.patch.object(guardian, "proxy_endpoint_available", return_value=True):
+                with mock.patch.object(service, "probe_all", return_value=[good]):
+                    with mock.patch.object(service, "attempt_failover") as failover:
+                        self.assertTrue(service.cycle())
+            failover.assert_not_called()
+            status = guardian.json.loads((path / "status.json").read_text())
+            self.assertTrue(status["healthy"])
+            self.assertEqual(status["overall_status"], "attention")
+            self.assertEqual(status["business_status"], "attention")
+            self.assertEqual(len(status["business_issues"]), 3)
+            self.assertGreater(status["pid"], 1)
+
+    def test_recent_warning_survives_guardian_restart_without_auto_switch(self):
+        from datetime import datetime, timezone, timedelta
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "2026" / "10" / "22"
+            folder.mkdir(parents=True)
+            stamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            stale = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(
+                timespec="milliseconds").replace("+00:00", "Z")
+            (folder / "app.log").write_text(
+                f'{stale} warning errorCode=cloudflare_challenge\n'
+                f'{stamp} warning errorCode=cloudflare_challenge\n'
+                f'{stamp} warning errorMessage="Too many requests"\n'
+                f'{stamp} warning ERR_TUNNEL_CONNECTION_FAILED\n',
+                encoding="utf-8",
+            )
+            watcher = guardian.LogWatcher(root)
+            self.assertEqual(watcher.read_new_failures(), [])
+            categories = {issue["category"] for issue in watcher.issue_summary()}
+            self.assertEqual(categories, {"cloudflare", "rate_limit"})
+
+    def test_old_business_errors_expire_without_corrupting_proxy_health(self):
+        watcher = guardian.LogWatcher(Path("/nonexistent"))
+        now = guardian.time.time()
+        watcher.issue_events.append((now - guardian.ISSUE_WINDOW_SECONDS - 1, "cloudflare"))
+        watcher.issue_events.append((now, "rate_limit"))
+        watcher.issue_events.append((now, "layout"))
+        self.assertEqual([item["category"] for item in watcher.issue_summary()], ["rate_limit"])
+        watcher.issue_events.append((now, "layout"))
+        watcher.issue_events.append((now, "layout"))
+        self.assertEqual({item["category"] for item in watcher.issue_summary()},
+                         {"rate_limit", "layout"})
+
+    def test_status_distinguishes_failed_edge_from_business_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = dict(guardian.DEFAULTS)
+            logger = logging.getLogger("edge-separation-test")
+            logger.addHandler(logging.NullHandler())
+            service = guardian.Guardian(config, logger, Path(tmp) / "status.json")
+            service.log_watcher.issue_events.append((guardian.time.time(), "rate_limit"))
+            service.write_status([guardian.ProbeResult("edge", False, 0, False, 1.0)],
+                                 0, False, proxy_available=True)
+            status = guardian.json.loads((Path(tmp) / "status.json").read_text())
+            self.assertEqual(status["overall_status"], "offline")
+            self.assertEqual(status["business_status"], "attention")
+
     def test_candidate_rotation_starts_after_current(self):
         nodes = ["a", "b", "c"]
         self.assertEqual(guardian.ordered_candidates(nodes, "b"), ["c", "a", "b"])
@@ -33,6 +127,29 @@ class GuardianTests(unittest.TestCase):
             side_effect=guardian.subprocess.TimeoutExpired(cmd="open", timeout=3),
         ):
             self.assertTrue(guardian.connect_shadowrocket_tunnel(False))
+
+    def test_node_preference_falls_back_to_saved_plist_if_export_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            domain = Path(tmp) / "group.com.liguangming.Shadowrocket"
+            Path(str(domain) + ".plist").write_bytes(
+                guardian.plistlib.dumps({guardian.SHADOWROCKET_NODE_KEY: "Japan 14"})
+            )
+            with mock.patch.object(guardian, "SHADOWROCKET_PREF_DOMAIN", domain):
+                with mock.patch.object(
+                    guardian.subprocess, "run", side_effect=[
+                        mock.Mock(returncode=1),
+                        mock.Mock(returncode=0, stdout=domain.with_name(domain.name + ".plist").read_bytes()),
+                    ]
+                ) as run:
+                    self.assertEqual(guardian.current_shadowrocket_node(), "Japan 14")
+                    self.assertEqual(run.call_count, 2)
+
+    def test_node_preference_read_is_bounded_when_os_blocks_it(self):
+        with mock.patch.object(
+            guardian.subprocess, "run",
+            side_effect=guardian.subprocess.TimeoutExpired(cmd="defaults", timeout=1),
+        ):
+            self.assertIsNone(guardian.current_shadowrocket_node())
 
     def test_latest_tunnel_stop_reason_distinguishes_manual_and_failure(self):
         manual = mock.Mock(

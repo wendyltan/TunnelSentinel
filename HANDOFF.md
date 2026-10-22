@@ -59,3 +59,11 @@ Always re-check `git status -sb`, HEAD, status.json and running LaunchAgents bef
 - Shadowrocket process and PacketTunnel are running, but `activate` shows no AX windows (count 0). `screencapture` returned a fully black image.
 - **Verified root blocker:** Swift `CGSessionCopyCurrentDictionary` returned `CGSSessionScreenIsLocked = 1`. Do not unlock the Mac, simulate password entry, alter sleep settings, or change proxy profile while owner sleeps. The unsaved `OpenAI-Resilience` form from previous night is not accessible.
 - Original active config remains `sr_cnip.db`. No new native fallback policy activated or saved. Attempt safely when owner unlocks local desktop. Existing private backup retained.
+
+
+## 2026-10-23 07:18 CST — unlocked GUI continuation
+
+- User unlocked Mac mini. Device online, Shadowrocket foreground window reopened (AX window count 1), and screenshot shows the **unsaved** fallback group editor at strategy/interval/URL. Public edge `healthy=true`, `overall_status=reachable`, `business_status=no_recent_errors`; Japan 04 and original active config `sr_cnip.db` unchanged.
+- Re-tested actual System Events GUI click for green `+` in fallback strategy row (`click at {998,722}`). Denied **-25211**, even though `System Events UI elements enabled=true` and read-only Shadowrocket window inspections work. This matches documented nested-command-agent macOS assistive-access failures: remote helper may need correct attributable Accessibility grant; an authorization list with Terminal and node checked is not proof of actionable GUI control.
+- Do not bypass via alternate mouse injection, editing Shadowrocket internal SQLite/rules, or resetting all TCC permissions; do not claim native fallback setup complete. The form has **not** gained a node or been saved.
+- Smallest user action if present: directly click the green `+` beside 策略 in the open Shadowrocket popup; verify node selection UI, choose valid candidates, return to group setup. Any broader GUI automation needs legitimately approved control-app access, not an unchecked CLI workaround.

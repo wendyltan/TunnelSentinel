@@ -67,3 +67,10 @@ Always re-check `git status -sb`, HEAD, status.json and running LaunchAgents bef
 - Re-tested actual System Events GUI click for green `+` in fallback strategy row (`click at {998,722}`). Denied **-25211**, even though `System Events UI elements enabled=true` and read-only Shadowrocket window inspections work. This matches documented nested-command-agent macOS assistive-access failures: remote helper may need correct attributable Accessibility grant; an authorization list with Terminal and node checked is not proof of actionable GUI control.
 - Do not bypass via alternate mouse injection, editing Shadowrocket internal SQLite/rules, or resetting all TCC permissions; do not claim native fallback setup complete. The form has **not** gained a node or been saved.
 - Smallest user action if present: directly click the green `+` beside 策略 in the open Shadowrocket popup; verify node selection UI, choose valid candidates, return to group setup. Any broader GUI automation needs legitimately approved control-app access, not an unchecked CLI workaround.
+
+
+## 2026-10-23 07:25 CST — user opened strategy picker, missing subscription nodes
+
+- User screenshot shows Shadowrocket `策略` picker lists only built-in policies (`PROXY`, `DIRECT`, `TAILSCALE`, `REJECT` variants), not subscribed Japan/US nodes. This is expected for a group without a bound subscription, NOT evidence subscription is empty.
+- Shadowrocket documentation indicates fallback group editor has separate `订阅` switch which reveals `服务器节点` selector; after choosing a real subscription, its nodes become eligible in the group's strategies. Source: LOWERTOP/Shadowrocket wiki and https://free-nodes.github.io/shadowrocket/shadowrocket_manual.html.
+- Instructed user to return to `OpenAI-Resilience` editor (do not select built-in `PROXY` or save an empty group), scroll to subscription switch, turn it on, choose the relevant current subscription. Next: filter to a small set of existing different-egress JP/US nodes, verify actual entries before saving; then bind the OpenAI/WebSocket domain rules in **inactive** `sr_cnip-copy.conf`. Original active profile untouched.

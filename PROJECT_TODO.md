@@ -26,7 +26,9 @@
 - [x] Nexitally AI Trace 检测方法核实：网页在当前访问者网络即时执行每域 `/cdn-cgi/trace` 与 GeoIP 查询，不提供每节点历史测试数据接口。
 - [x] 新增独立、低频 AI 多站点检测（8 个公开域名，每约 15 分钟，仅 HTTP 200 + 有效出口 IP 记为公共可达）；不阻断基础心跳，不读取订阅私密信息，结果过期后撤回。
 - [x] 菜单栏新增「AI 分流检测」可读摘要和逐站点结果，保留现有原生 fallback 节点切换权。
-- [ ] **更高级的智能选节点仍未完成**：若服务商未来有明确、可验证的单节点检测数据 API，或者 Shadowrocket 提供可靠的逐节点检测/选路接口，再做动态候选过滤及实机切换验收。不能把当前浏览器公共站点检测误称作逐节点解锁能力。
+- [x] **逐节点 ChatGPT 智能选择可行性研究**：确认原生 `fallback` 可逐候选检查单 URL；当前 Mac 实测 `GET /cdn-cgi/trace=200`、`HEAD /cdn-cgi/trace=403 (Cloudflare challenge)`，而 `HEAD /robots.txt=200`；自动分组是否同用 HEAD 尚待原生测试证实。见 `research/chatgpt-node-eligibility-20261023.md`。
+- [ ] **新 P0 — 核实原生 fallback 的 HTTP 测试方式 / 降低假失效风险**。在隔离、可回退条件下用 Shadowrocket 原生分组测试确认 HEAD/GET 区别和四候选结果；测试结果未验证前保持活动配置不动。
+- [ ] **更高级的智能选节点仍未完成**：只有拿到可信的逐节点后台健康与节点标识，才可能把客户端真实业务错误归属到某一候选；先复用原生组测试，不依赖 Nexitally 页面来推断每个节点的解锁能力。不支持的公开 API 不得编造或用第二套代理内核替代。
 
 ## P1 · Operational verification
 

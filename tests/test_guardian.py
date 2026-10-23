@@ -516,7 +516,10 @@ class GuardianTests(unittest.TestCase):
         logger = logging.getLogger("unconfirmed-node-test")
         logger.addHandler(logging.NullHandler())
         with tempfile.TemporaryDirectory() as temp_dir:
-            service = guardian.Guardian(config, logger, Path(temp_dir) / "status.json")
+            # This test exercises post-command verification, not macOS TCC.
+            # Never ask the real protected Shadowrocket preferences during CI.
+            with mock.patch.object(guardian, "current_shadowrocket_node", return_value=None):
+                service = guardian.Guardian(config, logger, Path(temp_dir) / "status.json")
             with mock.patch.object(guardian, "select_shadowrocket_node", return_value=True):
                 with mock.patch.object(guardian, "wait_for_shadowrocket_node", return_value=False):
                     with mock.patch.object(service, "probe_all") as probe:

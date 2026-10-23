@@ -80,6 +80,79 @@ class AIMatrixTests(TestCase):
             self.assertEqual(state["ai_matrix_sites"], [])
             self.assertFalse(state["ai_matrix_fresh"])
 
+    def test_method_audit_marks_only_observed_head_challenge_mismatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            service = self.new_service(root)
+            service.config["endpoint_method_audit_enabled"] = True
+            def fake_probe(name, url, proxy, **options):
+                if options.get("http_head"):
+                    self.assertEqual(name, "method-head-current-route")
+                    return guardian.ProbeResult(name, False, 403, True, .2)
+                return guardian.ProbeResult(name, True, 200, False, .1, "",
+                                            "1.2.3.4", "SEA", "US")
+            with mock.patch.object(guardian, "curl_probe", side_effect=fake_probe) as probe:
+                service._ai_matrix_runner()
+            head_calls = [call for call in probe.call_args_list
+                          if call.kwargs.get("http_head")]
+            self.assertEqual(len(head_calls), 1)
+            service.write_status([guardian.ProbeResult("edge", True, 200, False, .2)],0,True)
+            state = json.loads((Path(root)/"status.json").read_text())
+            audit = state["endpoint_method_audit"]
+            self.assertEqual(audit["get_code"], 200)
+            self.assertEqual(audit["head_code"], 403)
+            self.assertEqual(audit["result"], "possible_head_false_negative")
+            self.assertEqual(audit["scope"], "current_route_only_not_native_fallback_proof")
+            self.assertEqual(service.recovery_state, "monitoring")
+
+    def test_method_audit_does_not_report_native_group_method_or_trigger_switch(self):
+        with tempfile.TemporaryDirectory() as root:
+            service = self.new_service(root)
+            service.config["endpoint_method_audit_enabled"] = True
+            def fake_probe(name, url, proxy, **options):
+                if options.get("http_head"):
+                    return guardian.ProbeResult(name, True, 200, False, .25)
+                return guardian.ProbeResult(name, True, 200, False, .3, "",
+                                            "5.6.7.8","NRT","JP")
+            with mock.patch.object(guardian, "curl_probe", side_effect=fake_probe):
+                service._ai_matrix_runner()
+            service.write_status([guardian.ProbeResult("edge", True, 200, False, .25)],0,True)
+            state = json.loads((Path(root)/"status.json").read_text())
+            self.assertEqual(state["endpoint_method_audit"]["result"], "no_mismatch_observed")
+            self.assertFalse(state["openai_group_backend_verified"])
+            service.write_status([guardian.ProbeResult("edge", False, 0, False, 1)],0,False)
+            state = json.loads((Path(root)/"status.json").read_text())
+            self.assertEqual(state["endpoint_method_audit"], {})
+
+    def test_head_rejected_without_cloudflare_marker_is_inconclusive(self):
+        with tempfile.TemporaryDirectory() as root:
+            service = self.new_service(root)
+            service.config["endpoint_method_audit_enabled"] = True
+            def fake_probe(name, url, proxy, **options):
+                if options.get("http_head"):
+                    return guardian.ProbeResult(name, True, 403, False, .25)
+                return guardian.ProbeResult(name, True, 200, False, .3, "",
+                                            "5.6.7.8","SEA","US")
+            with mock.patch.object(guardian, "curl_probe", side_effect=fake_probe):
+                service._ai_matrix_runner()
+            service.write_status(
+                [guardian.ProbeResult("edge", True, 200, False, .3)],
+                0, True)
+            state = json.loads((Path(root)/"status.json").read_text())
+            self.assertEqual(state["endpoint_method_audit"]["result"], "inconclusive")
+
+    def test_method_audit_default_disabled_and_does_not_extra_request(self):
+        with tempfile.TemporaryDirectory() as root:
+            service = self.new_service(root)
+            self.assertFalse(service.config.get("endpoint_method_audit_enabled"))
+            ok = guardian.ProbeResult("ai-foo", True, 200, False, .2, "",
+                                       "5.6.7.8","NRT","JP")
+            with mock.patch.object(guardian, "curl_probe", return_value=ok) as probe:
+                service._ai_matrix_runner()
+            self.assertEqual(probe.call_count, len(guardian.AI_TRACE_TARGETS))
+            service.write_status([guardian.ProbeResult("edge", True, 200, False, .2)],0,True)
+            state = json.loads((Path(root)/"status.json").read_text())
+            self.assertEqual(state["endpoint_method_audit"], {})
+
     def test_throttled_background_dispatch(self):
         with tempfile.TemporaryDirectory() as root:
             service = self.new_service(root)

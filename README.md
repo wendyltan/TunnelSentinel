@@ -67,6 +67,8 @@ TunnelSentinel 内置参考 [Nexitally AI 分流测试](https://nxonearth.com/ai
 
 **节点适配研究：** 目前保留 Shadowrocket 原生 `fallback` 做唯一选路，支持单 URL 的逐候选自动健康测试。研究阶段发现，当前出口对 `/cdn-cgi/trace` 的 `GET` 返回 200，但 `HEAD` 返回 Cloudflare 403；如果原生组测试也使用 HEAD，可能出现误判。具体边界、可复现对照与下一项安全验证见 [ChatGPT 节点健康资格研究](research/chatgpt-node-eligibility-20261023.md)。在原生组测试方式确认前不擅自更换活动检测 URL。
 
+TunnelSentinel 还提供**可选的 HEAD/GET 方法差异诊断**：开启 `endpoint_method_audit_enabled` 后，约每 15 分钟随 AI 分流检测额外进行一次当前出口的 HEAD 测试；遇到 GET 200、HEAD Cloudflare challenge 时，菜单详情明确提示“可能存在健康测试误判”。此功能默认关闭，不参与节点切换，不读取订阅/登录信息，也不能证明 Shadowrocket 原生分组后台一定使用 HEAD。
+
 ## 快速开始
 
 **要求：** macOS、Shadowrocket、Python 3，以及可访问的本地 HTTP 代理（默认端口 1082）。

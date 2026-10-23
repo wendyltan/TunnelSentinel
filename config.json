@@ -24,5 +24,6 @@
   "native_fallback_enabled": false,
   "native_fallback_group": "",
   "ai_matrix_enabled": false,
-  "ai_matrix_interval_seconds": 900
+  "ai_matrix_interval_seconds": 900,
+  "endpoint_method_audit_enabled": false
 }

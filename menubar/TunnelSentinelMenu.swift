@@ -43,6 +43,9 @@ private struct Snapshot {
     var aiMatrixRunning = false
     var aiMatrixCheckedAt = ""
     var aiMatrixSites: [AISiteCheck] = []
+    var endpointMethodResult = ""
+    var endpointHeadCode = 0
+    var endpointGetCode = 0
 }
 
 @MainActor
@@ -169,6 +172,11 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         next.aiMatrixFresh = values["ai_matrix_fresh"] as? Bool ?? false
         next.aiMatrixRunning = values["ai_matrix_running"] as? Bool ?? false
         next.aiMatrixCheckedAt = values["ai_matrix_checked_at"] as? String ?? ""
+        if let audit = values["endpoint_method_audit"] as? [String: Any] {
+            next.endpointMethodResult = audit["result"] as? String ?? ""
+            next.endpointHeadCode = audit["head_code"] as? Int ?? 0
+            next.endpointGetCode = audit["get_code"] as? Int ?? 0
+        }
         if let sites = values["ai_matrix_sites"] as? [[String: Any]] {
             next.aiMatrixSites = sites.compactMap { item in
                 guard let name = item["name"] as? String,
@@ -518,9 +526,30 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                 仅表示当前代理路径的公共网站可达性及出口地理信息。
                 不等于节点支持 ChatGPT 登录、对话或 API。
                 其他 AI 网站的失败不会触发 ChatGPT 切换。
+                \(methodAuditDescription)
                 """
         }
         dialog.runModal()
+    }
+
+    private var methodAuditDescription: String {
+        guard snapshot.aiMatrixFresh else { return "" }
+        switch snapshot.endpointMethodResult {
+        case "possible_head_false_negative":
+            return """
+
+                当前路径的检测 URL 存在方法差异：
+                GET \(snapshot.endpointGetCode) / HEAD \(snapshot.endpointHeadCode)（Cloudflare 验证）
+                注意：尚未证明 Shadowrocket 后台采用 HEAD。
+                这是待核查风险，不触发节点切换。
+                """
+        case "no_mismatch_observed":
+            return "\n当前路径 HEAD/GET 无已知冲突（不代表全部节点）。"
+        case "inconclusive":
+            return "\n当前路径 HEAD/GET 检查结果不确定，请勿推断节点失效。"
+        default:
+            return ""
+        }
     }
 
     private func rebuildMenu() {
@@ -538,6 +567,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             String(snapshot.recoveryRetrySeconds),
             snapshot.issues.map { "\($0.title):\($0.count)" }.joined(separator: "|"),
             aiMatrixSummary, snapshot.aiMatrixCheckedAt,
+            snapshot.endpointMethodResult, String(snapshot.endpointHeadCode),
+            String(snapshot.endpointGetCode),
             snapshot.aiMatrixSites.map { "\($0.domain):\($0.status):\($0.location)" }.joined(separator: "|")
         ].joined(separator: "::")
         guard fingerprint != lastRenderedState else { return }

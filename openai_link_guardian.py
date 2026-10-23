@@ -29,7 +29,7 @@ from urllib.parse import urlencode, urlparse
 
 
 APP_NAME = "OpenAILinkGuardian"
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 DEFAULT_HOME = Path.home() / "Library" / "Application Support" / APP_NAME
 DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 DEFAULT_STATUS = DEFAULT_HOME / "status.json"
@@ -65,6 +65,9 @@ DEFAULTS = {
     # node selection and never escalate rate limits/geo lookups to a failure.
     "ai_matrix_enabled": False,
     "ai_matrix_interval_seconds": 900,
+    # Read-only request-method comparison for the *currently selected* route.
+    # Does NOT infer whether Shadowrocket native fallback itself uses HEAD.
+    "endpoint_method_audit_enabled": False,
     "tunnel_recovery_enabled": True,
     "tunnel_event_lookback_seconds": 300,
     "tunnel_reconnect_cooldown_seconds": 60,
@@ -203,7 +206,8 @@ def is_cloudflare_challenge(headers: str, body: str) -> bool:
     )
 
 
-def curl_probe(name: str, url: str, proxy: str, websocket: bool = False) -> ProbeResult:
+def curl_probe(name: str, url: str, proxy: str, websocket: bool = False,
+               http_head: bool = False) -> ProbeResult:
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="openai-link-guardian-") as temp_dir:
         headers_path = Path(temp_dir) / "headers"
@@ -239,6 +243,8 @@ def curl_probe(name: str, url: str, proxy: str, websocket: bool = False) -> Prob
                     "Sec-WebSocket-Key: b3BlbmFpLWxpbmstZ3VhcmRpYW4=",
                 ]
             )
+        if http_head:
+            command.append("--head")
         command.append(url)
         completed = subprocess.run(command, capture_output=True, text=True, check=False)
         headers = headers_path.read_text(encoding="utf-8", errors="replace") if headers_path.exists() else ""
@@ -613,6 +619,7 @@ class Guardian:
         self.ai_matrix_running = False
         self.ai_matrix_checked_at = 0.0
         self.ai_matrix_checks: list[dict] = []
+        self.endpoint_method_audit: dict = {}
         self.healthy_streak_node: Optional[str] = None
         self.healthy_streak_count = 0
         self.learned_good_nodes = read_known_good_nodes(
@@ -654,8 +661,35 @@ class Guardian:
         try:
             with ThreadPoolExecutor(max_workers=3) as workers:
                 checks = list(workers.map(check, AI_TRACE_TARGETS))
+            # HEAD is only a speculative compatibility check; the actual
+            # Shadowrocket native fallback probe method is NOT yet proven.
+            # No extra request unless explicitly enabled, and no dynamic
+            # proxy reconfiguration on a challenged or ambiguous result.
+            audit = {}
+            if self.config.get("endpoint_method_audit_enabled", False):
+                route = next((r for r in checks if r["domain"] == "chatgpt.com"), None)
+                head = curl_probe(
+                    "method-head-current-route",
+                    "https://chatgpt.com/cdn-cgi/trace", proxy,
+                    http_head=True,
+                )
+                get_ok = bool(route and route["status"] == "reachable")
+                audit = {
+                    "get_code": route["http_code"] if route else 0,
+                    "head_code": head.http_code,
+                    "head_cloudflare_challenge": bool(head.challenged),
+                    "result": (
+                        "possible_head_false_negative"
+                        if get_ok and head.http_code == 403 and head.challenged
+                        else "no_mismatch_observed"
+                        if get_ok and head.transport_ok and head.http_code == 200
+                        else "inconclusive"
+                    ),
+                    "scope": "current_route_only_not_native_fallback_proof",
+                }
             with self.ai_matrix_lock:
                 self.ai_matrix_checks = checks
+                self.endpoint_method_audit = audit
                 self.ai_matrix_checked_at = time.time()
         except Exception as exc:
             self.logger.warning("AI routing supplemental checks failed: %s",
@@ -883,6 +917,8 @@ class Guardian:
             ai_valid = (healthy and self.config.get("ai_matrix_enabled", False)
                         and 0 <= ai_age <= max_age)
             ai_rows = [row.copy() for row in self.ai_matrix_checks] if ai_valid else []
+            method_audit = (self.endpoint_method_audit.copy() if ai_valid
+                            and self.config.get("endpoint_method_audit_enabled", False) else {})
             ai_when = (datetime.fromtimestamp(self.ai_matrix_checked_at)
                        .astimezone().isoformat(timespec="seconds")
                        if ai_valid else "")
@@ -893,6 +929,8 @@ class Guardian:
             "ai_matrix_running": ai_busy,
             "ai_matrix_fresh": bool(ai_valid),
             "ai_matrix_sites": ai_rows,
+            "endpoint_method_audit": method_audit,
+            "endpoint_method_audit_limit": "Observed route only; not a Shadowrocket backend-method trace",
             "ai_matrix_limit": "Public access/routing only; not node unlock or authenticated chat",
             "version": VERSION,
             "pid": os.getpid(),

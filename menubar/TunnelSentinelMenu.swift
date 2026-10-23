@@ -20,6 +20,12 @@ private struct Snapshot {
     var failures = 0
     var routeManagement = "legacy_external_select"
     var nativeFallbackGroup = ""
+    var egressObserved = false
+    var egressIP = ""
+    var egressColo = ""
+    var egressCountry = ""
+    var actualBackendName = ""
+    var backendVerified = false
     var recoveryState = "monitoring"
     var recoveryReason = ""
     var recoveryRetrySeconds = 0
@@ -132,6 +138,12 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         next.failures = values["recent_failure_score"] as? Int ?? 0
         next.routeManagement = values["route_management"] as? String ?? "legacy_external_select"
         next.nativeFallbackGroup = values["native_fallback_group"] as? String ?? ""
+        next.egressObserved = values["openai_egress_observed"] as? Bool ?? false
+        next.egressIP = values["openai_egress_ip"] as? String ?? ""
+        next.egressColo = values["openai_egress_colo"] as? String ?? ""
+        next.egressCountry = values["openai_egress_country"] as? String ?? ""
+        next.actualBackendName = values["openai_group_backend_name"] as? String ?? ""
+        next.backendVerified = values["openai_group_backend_verified"] as? Bool ?? false
         next.recoveryState = values["recovery_state"] as? String ?? "monitoring"
         next.recoveryReason = values["recovery_reason"] as? String ?? ""
         next.recoveryRetrySeconds = values["recovery_retry_seconds"] as? Int ?? 0
@@ -209,6 +221,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     }
 
     private var nodePending: Bool {
+        if snapshot.routeManagement == "native_fallback" { return false }
         guard let liveNode, !liveNode.isEmpty else { return false }
         return liveNode != snapshot.checkedNode
     }
@@ -218,6 +231,48 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         // should not override a passing OpenAI edge + quiet client diagnostics.
         if snapshot.routeManagement == "native_fallback" { return false }
         return liveNode == nil && !snapshot.nodeVerified
+    }
+
+    // This is the *observed proxy egress* from the same live ChatGPT
+    // public-edge probe used for health; it is not a Shadowrocket node name.
+    private var observedEgress: String {
+        guard snapshot.fresh, snapshot.networkHealthy, snapshot.egressObserved,
+              !snapshot.egressIP.isEmpty else { return "待确认（尚无有效出口探测）" }
+        let place = [snapshot.egressCountry, snapshot.egressColo]
+            .filter { !$0.isEmpty }.joined(separator: " · ")
+        return place.isEmpty ? snapshot.egressIP : "\(place) · \(snapshot.egressIP)"
+    }
+
+    private var shortEgress: String {
+        guard snapshot.fresh, snapshot.networkHealthy, snapshot.egressObserved else {
+            return "出口待确认"
+        }
+        let location = [snapshot.egressCountry, snapshot.egressColo]
+            .filter { !$0.isEmpty }.joined(separator: "-")
+        return location.isEmpty ? "出口已观测" : location
+    }
+
+    private var globalNode: String {
+        if let liveNode, !liveNode.isEmpty { return liveNode }
+        if snapshot.fresh && !snapshot.checkedNode.isEmpty {
+            return snapshot.nodeVerified
+                ? snapshot.checkedNode
+                : "上次记录 · " + snapshot.checkedNode
+        }
+        return "未核实"
+    }
+
+    private var compactGlobalNode: String {
+        let full = globalNode
+        if full == "未核实" { return full }
+        let isHistory = full.hasPrefix("上次记录 · ")
+        let name = isHistory ? String(full.dropFirst("上次记录 · ".count)) : full
+        // Name is allowed to be only *last known* when macOS denies current
+        // preference access; the prefix preserves the confidence distinction.
+        let compact = String(name.replacingOccurrences(of: "🇯🇵 ", with: "")
+                                 .replacingOccurrences(of: "🇺🇸 USA ", with: "")
+                                 .prefix(14))
+        return isHistory ? "上次 " + compact : compact
     }
 
     private var recoveryBlocked: Bool {
@@ -315,36 +370,45 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
 
     private func menuCard() -> NSView {
         let w: CGFloat = 376
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: 280))
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: 326))
         v.wantsLayer = true
         v.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         v.addSubview(label("T U N N E L   S E N T I N E L",
                            font: .systemFont(ofSize: 10, weight: .bold),
                            color: .tertiaryLabelColor,
-                           frame: NSRect(x: 20, y: 244, width: 260, height: 19)))
+                           frame: NSRect(x: 20, y: 290, width: 260, height: 19)))
         v.addSubview(badge(statusLabel, color: accent,
-                           frame: NSRect(x: 280, y: 241, width: 78, height: 22)))
+                           frame: NSRect(x: 280, y: 287, width: 78, height: 22)))
         v.addSubview(label(headline, font: .systemFont(ofSize: 19, weight: .semibold),
-                           color: .labelColor, frame: NSRect(x: 20, y: 207, width: 336, height: 27)))
+                           color: .labelColor, frame: NSRect(x: 20, y: 253, width: 336, height: 27)))
         v.addSubview(label(detail, font: .systemFont(ofSize: 11.5),
-                           color: .secondaryLabelColor, frame: NSRect(x: 20, y: 184, width: 337, height: 19)))
+                           color: .secondaryLabelColor, frame: NSRect(x: 20, y: 230, width: 337, height: 19)))
 
-        let nodeBox = NSView(frame: NSRect(x: 18, y: 114, width: 340, height: 60))
+        let nodeBox = NSView(frame: NSRect(x: 18, y: 114, width: 340, height: 106))
         nodeBox.wantsLayer = true
         nodeBox.layer?.cornerRadius = 10
         nodeBox.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        let nodeCaption = snapshot.routeManagement == "native_fallback"
-            ? "SHADOWROCKET · 全局选择（非 OpenAI 实际出口）"
-            : nodeUnverified ? "SHADOWROCKET · 上次记录" : "SHADOWROCKET · 当前节点"
-        nodeBox.addSubview(label(nodeCaption,
+        let backendSource = snapshot.backendVerified && !snapshot.actualBackendName.isEmpty
+            ? "Shadowrocket 当前分组节点"
+            : "OpenAI 实际出口 · 最近一次探测（非节点名）"
+        nodeBox.addSubview(label(backendSource,
                                 font: .systemFont(ofSize: 10, weight: .medium),
                                 color: .secondaryLabelColor,
-                                frame: NSRect(x: 12, y: 38, width: 300, height: 16)))
-        let nodeName = liveNode ?? (snapshot.nodeVerified
-            ? snapshot.checkedNode : snapshot.checkedNode.isEmpty
-            ? "节点读取受限" : "未核实 · " + snapshot.checkedNode)
-        nodeBox.addSubview(label(nodeName, font: .systemFont(ofSize: 15, weight: .semibold),
-                                color: .labelColor, frame: NSRect(x: 12, y: 9, width: 312, height: 25)))
+                                frame: NSRect(x: 12, y: 84, width: 317, height: 15)))
+        let egressTitle = snapshot.backendVerified && !snapshot.actualBackendName.isEmpty
+            ? snapshot.actualBackendName : observedEgress
+        nodeBox.addSubview(label(egressTitle,
+                                font: .systemFont(ofSize: 13.5, weight: .semibold),
+                                color: .labelColor,
+                                frame: NSRect(x: 12, y: 57, width: 312, height: 22)))
+        nodeBox.addSubview(label("SHADOWROCKET · 全局手选节点",
+                                font: .systemFont(ofSize: 10, weight: .medium),
+                                color: .secondaryLabelColor,
+                                frame: NSRect(x: 12, y: 35, width: 312, height: 15)))
+        nodeBox.addSubview(label(globalNode,
+                                font: .systemFont(ofSize: 13.5, weight: .semibold),
+                                color: .labelColor,
+                                frame: NSRect(x: 12, y: 9, width: 312, height: 23)))
         v.addSubview(nodeBox)
 
         divider(105, in: v)
@@ -397,6 +461,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             String(snapshot.fresh), String(snapshot.networkHealthy),
             String(guardianRunning), String(guardianPaused), String(nodeUnverified),
             statusLabel, menuBarStateMarker,
+            String(snapshot.egressObserved), snapshot.egressIP,
+            snapshot.egressCountry, snapshot.egressColo,
+            snapshot.actualBackendName, String(snapshot.backendVerified),
             snapshot.routeManagement, snapshot.nativeFallbackGroup,
             snapshot.recoveryState, snapshot.recoveryReason,
             String(snapshot.recoveryRetrySeconds),
@@ -405,10 +472,12 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         guard fingerprint != lastRenderedState else { return }
         lastRenderedState = fingerprint
         // Allow macOS to choose dark/light contrast for both glyph and label.
-        statusItem.button?.title = "\(menuBarStateMarker) \(statusLabel)"
+        statusItem.button?.title = snapshot.routeManagement == "native_fallback"
+            ? "\(menuBarStateMarker) \(statusLabel) · 出 \(shortEgress) · 全 \(compactGlobalNode)"
+            : "\(menuBarStateMarker) \(statusLabel) · 全 \(compactGlobalNode)"
         statusItem.button?.contentTintColor = nil
-        statusItem.button?.toolTip = "TunnelSentinel · \(statusLabel)\n\(headline)\n\(detail)\n节点：\(liveNode ?? snapshot.checkedNode)"
-        statusItem.button?.setAccessibilityLabel("TunnelSentinel，\(statusLabel)")
+        statusItem.button?.toolTip = "TunnelSentinel · \(statusLabel)\n\(headline)\nOpenAI 实际出口（探测观测）：\(observedEgress)\n全局节点：\(globalNode)\n\(detail)"
+        statusItem.button?.setAccessibilityLabel("TunnelSentinel，\(statusLabel)，OpenAI 出口 \(shortEgress)，全局节点 \(globalNode)")
         statusItem.button?.setAccessibilityValue("\(headline)；\(detail)")
         let menu = NSMenu()
         let card = NSMenuItem()

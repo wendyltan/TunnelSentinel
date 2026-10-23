@@ -94,3 +94,19 @@ Always re-check `git status -sb`, HEAD, status.json and running LaunchAgents bef
 - Native-aware menu app (v1.4.3) distinguishes global selected node from OpenAI group egress; fixes misleading `node_unverified` badge when macOS blocks reading global node (not a link fault).
 - Regression suite: 39 Python tests pass, native menu Swift builds, full signed app deploy; real forced node-failure switching and logged-in long-term WebSocket stability **still untested**.
 - **Rollback**: In Shadowrocket Config, choose original `sr_cnip.conf` and `使用配置`; revert live Guardian `native_fallback_enabled=false` if abandoning native group (preserved pre-v142 config backup), or keep native mode if the user plans to re-enable the group soon. Never perform destructive database changes.
+
+
+## 2026-10-23 11:40 CST — Requested two-node visibility
+
+- User wanted actual OpenAI node AND global selected Shadowrocket node shown concurrently in the menu bar and main popup. Existing code only used `group.com.liguangming.SelectedServerName`, which is global selection. A live direct proxy public edge request showed observed `ip=38.175.103.97`, `colo=SEA`, `loc=US` while global selection was `🇯🇵 Japan 04`. This confirms routing differs.
+- Read-only inspection of Shadowrocket accessible preference state, compiled policy group metadata and group-archive object keys did **not** reveal a stable, read-only current-group-backend NAME API. Official Shadowrocket docs caution policy tests and instantaneous connection choice can differ, thus a previous `USA Seattle 05` label is **not** safe to cache as eternally live.
+- Backend v1.4.4 reuses the existing `https://chatgpt.com/cdn-cgi/trace` probe body (no extra polling) to parse IP/colo/country with strict validation. Only successful fresh probe results set `openai_egress_*;` failed/unavailable probes clear those fields. `openai_group_backend_verified=false`, backend name deliberately empty until independently verified; never label egress IP as exact provider node.
+- Signed menu app v1.4.4 shows two distinct fields: `OpenAI 实际出口 · 最近一次探测（非节点名）` with geo/IP, and `SHADOWROCKET · 全局手选节点` with exact global selected name. The compact status bar includes `出 US-SEA · 全 Japan 04` alongside the health label. When stale or unreadable, displays unknown instead of stale cached data; no ChatGPT/Shadowrocket/tunnel restart or proxy-rule modification.
+- Need post-install runtime status check and user visual acceptance, plus eventual reliable Shadowrocket-native backend-name API if available. Do not claim this IP/colo is the exact subscription **server name**, nor that full failover is fault-injection-verified.
+
+
+## Runtime note: macOS preference access 2026-10-23 11:47
+
+- Backend dual-egress v1.4.4 deployed, recorded fresh `openai_egress_observed=true`, `openai_egress_ip=38.175.103.97`, `openai_egress_colo=SEA`, `openai_egress_country=US`; original global node value `🇯🇵 Japan 04` remains. Health `healthy=true`, client `business_status=attention`.
+- First signed menu deployment displayed `! 需留意 · 出 US-SEA · 全 未核实` because macOS intermittently denied fresh node preference read; backend's stored node was known but not verified for *this cycle*. The v1.4.5 menu therefore labels fallback global node `上次记录 · 🇯🇵 Japan 04` (status bar `全 上次 Japan 04`), never implying a stale name is current.
+- Current actual provider **node name** remains unverified; SEA/IP is a recent routed egress observation and is not equivalent to that name. A future read-only supported source from Shadowrocket is needed to make that label exact.

@@ -8,6 +8,33 @@ import openai_link_guardian as guardian
 
 
 class GuardianTests(unittest.TestCase):
+    def test_edge_trace_extracts_observed_egress_but_not_a_node_name(self):
+        self.assertEqual(
+            guardian.parse_cloudflare_trace("fl=123\nip=38.175.103.97\ncolo=SEA\nloc=US\n"),
+            ("38.175.103.97", "SEA", "US"),
+        )
+        self.assertEqual(guardian.parse_cloudflare_trace("ip=not-an-ip\ncolo=SEA\nloc=US"), ("", "", ""))
+        self.assertEqual(guardian.parse_cloudflare_trace("ip=1.2.3.4\ncolo=no\nloc=??"), ("1.2.3.4", "", ""))
+
+    def test_egress_is_not_carried_over_after_failed_probe(self):
+        config = dict(guardian.DEFAULTS)
+        logger = logging.getLogger("egress-observation-test")
+        logger.addHandler(logging.NullHandler())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            service = guardian.Guardian(config, logger, path)
+            good = guardian.ProbeResult("edge", True, 200, False, 0.4, "",
+                                         "38.175.103.97", "SEA", "US")
+            service.write_status([good], 0, True)
+            status = guardian.json.loads(path.read_text())
+            self.assertTrue(status["openai_egress_observed"])
+            self.assertEqual(status["openai_egress_colo"], "SEA")
+            self.assertEqual(status["openai_group_backend_name"], "")
+            service.write_status([guardian.ProbeResult("edge", False, 0, False, 10)], 0, False)
+            status = guardian.json.loads(path.read_text())
+            self.assertFalse(status["openai_egress_observed"])
+            self.assertEqual(status["openai_egress_ip"], "")
+
     def test_cloudflare_challenge_detection(self):
         self.assertTrue(guardian.is_cloudflare_challenge("cf-mitigated: challenge", ""))
         self.assertTrue(guardian.is_cloudflare_challenge("", "Enable JavaScript and cookies to continue"))

@@ -8,6 +8,7 @@ import collections
 import dataclasses
 from datetime import datetime
 import fcntl
+import ipaddress
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -26,7 +27,7 @@ from urllib.parse import urlencode, urlparse
 
 
 APP_NAME = "OpenAILinkGuardian"
-VERSION = "1.4.2"
+VERSION = "1.4.4"
 DEFAULT_HOME = Path.home() / "Library" / "Application Support" / APP_NAME
 DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 DEFAULT_STATUS = DEFAULT_HOME / "status.json"
@@ -108,6 +109,31 @@ class ProbeResult:
     challenged: bool
     duration: float
     detail: str = ""
+    egress_ip: str = ""
+    egress_colo: str = ""
+    egress_country: str = ""
+
+
+def parse_cloudflare_trace(body: str) -> tuple[str, str, str]:
+    """Only accept a valid IP and bounded colo/country from the public edge.
+
+    It measures an observed proxied request, not the identity of an upstream
+    Shadowrocket server and not a promise for every separate connection.
+    """
+    attributes = {}
+    for line in body.splitlines()[:35]:
+        key, sep, value = line.partition("=")
+        if sep and key in ("ip", "colo", "loc") and len(value) <= 55:
+            attributes[key] = value.strip()
+    try:
+        ip = str(ipaddress.ip_address(attributes.get("ip", "")))
+    except ValueError:
+        return "", "", ""
+    colo = attributes.get("colo", "")
+    loc = attributes.get("loc", "")
+    return ip, (colo if re.fullmatch(r"[A-Z]{3}", colo) else ""), (
+        loc if re.fullmatch(r"[A-Z]{2}", loc) else ""
+    )
 
 
 def load_config(path: Path) -> dict:
@@ -201,6 +227,13 @@ def curl_probe(name: str, url: str, proxy: str, websocket: bool = False) -> Prob
     challenged = is_cloudflare_challenge(headers, body)
     transport_ok = completed.returncode == 0 and http_code > 0 and not challenged
     detail = completed.stderr.strip().replace("\n", " ")[:300]
+    # Reuse the already-performed public edge request; no extra network
+    # calls, no secret URLs and no temporary logging of the trace body.
+    egress_ip, egress_colo, egress_country = (
+        parse_cloudflare_trace(body)
+        if name.startswith("edge") and http_code == 200 and transport_ok
+        and urlparse(url).path == "/cdn-cgi/trace" else ("", "", "")
+    )
     return ProbeResult(
         name=name,
         transport_ok=transport_ok,
@@ -208,6 +241,9 @@ def curl_probe(name: str, url: str, proxy: str, websocket: bool = False) -> Prob
         challenged=challenged,
         duration=time.monotonic() - started,
         detail=detail,
+        egress_ip=egress_ip,
+        egress_colo=egress_colo,
+        egress_country=egress_country,
     )
 
 
@@ -718,6 +754,11 @@ class Guardian:
         tunnel_stop_reason: str = "none",
     ) -> None:
         issues = self.log_watcher.issue_summary()
+        observed = next(
+            (result for result in results
+             if result.transport_ok and result.http_code == 200 and result.egress_ip),
+            None,
+        )
         payload = {
             "version": VERSION,
             "pid": os.getpid(),
@@ -729,6 +770,15 @@ class Guardian:
             "route_management": ("native_fallback" if self.config.get("native_fallback_enabled", False)
                                  else "legacy_external_select"),
             "native_fallback_group": str(self.config.get("native_fallback_group", "")),
+            # An observation is valid only for THIS probe cycle. In
+            # particular, do not leak a cached IP into failure/stale states.
+            "openai_egress_observed": bool(observed and healthy),
+            "openai_egress_ip": observed.egress_ip if observed and healthy else "",
+            "openai_egress_colo": observed.egress_colo if observed and healthy else "",
+            "openai_egress_country": observed.egress_country if observed and healthy else "",
+            "openai_egress_source": "chatgpt_public_edge" if observed and healthy else "unverified",
+            "openai_group_backend_name": "",
+            "openai_group_backend_verified": False,
             "current_node_scope": ("shadowrocket_global_selection" if self.config.get("native_fallback_enabled", False)
                                    else "shadowrocket_selected_server"),
             "recovery_state": self.recovery_state,

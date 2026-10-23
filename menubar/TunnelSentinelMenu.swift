@@ -50,6 +50,12 @@ private struct Snapshot {
     var endpointMethodResult = ""
     var endpointHeadCode = 0
     var endpointGetCode = 0
+    var userLastVerifiedNode = ""
+    var userLastVerifiedDate = ""
+    var userLastVerifiedGroup = ""
+    var screenshotCandidates: [String] = []
+    var observedEgressHistory: [[String: Any]] = []
+    var lastEdgeOutage: [String: Any] = [:]
 }
 
 @MainActor
@@ -164,6 +170,23 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         next.egressCountry = values["openai_egress_country"] as? String ?? ""
         next.actualBackendName = values["openai_group_backend_name"] as? String ?? ""
         next.backendVerified = values["openai_group_backend_verified"] as? Bool ?? false
+        if let evidence = try? Data(contentsOf: base.appendingPathComponent("group-node-evidence.json")),
+           let data = (try? JSONSerialization.jsonObject(with: evidence)) as? [String: Any],
+           data["source"] as? String == "human_verified_shadowrocket_ui",
+           let name = data["selected_node_at_observation"] as? String,
+           let group = data["group"] as? String,
+           group == next.nativeFallbackGroup,
+           !name.isEmpty {
+            next.userLastVerifiedNode = String(name.prefix(90))
+            next.userLastVerifiedDate = String((data["observed_date"] as? String ?? "").prefix(24))
+            next.userLastVerifiedGroup = group
+            next.screenshotCandidates = (data["candidates"] as? [String] ?? []).prefix(16).map { String($0.prefix(90)) }
+        }
+        next.observedEgressHistory = (values["egress_change_history"] as? [[String: Any]] ?? [])
+            .filter { $0["evidence"] as? String == "confirmed_public_edge_egress_change"
+                      && $0["native_backend_switch_verified"] as? Bool == false }
+            .suffix(6).map { $0 }
+        next.lastEdgeOutage = values["last_public_edge_incident"] as? [String: Any] ?? [:]
         next.recoveryState = values["recovery_state"] as? String ?? "monitoring"
         next.recoveryReason = values["recovery_reason"] as? String ?? ""
         next.recoveryRetrySeconds = values["recovery_retry_seconds"] as? Int ?? 0
@@ -596,6 +619,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             aiMatrixSummary, snapshot.aiMatrixCheckedAt,
             snapshot.lastEgressChangeAt, snapshot.lastEgressChangeFrom,
             snapshot.lastEgressChangeTo, String(snapshot.lastEgressChangeWithOutage),
+            snapshot.userLastVerifiedNode, snapshot.userLastVerifiedDate,
+            snapshot.userLastVerifiedGroup, snapshot.screenshotCandidates.joined(separator: "|"),
+            snapshot.observedEgressHistory.map { String(describing: $0) }.joined(separator: "|"),
             snapshot.endpointMethodResult, String(snapshot.endpointHeadCode),
             String(snapshot.endpointGetCode),
             snapshot.aiMatrixSites.map { "\($0.domain):\($0.status):\($0.location)" }.joined(separator: "|")
@@ -618,7 +644,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("立即检查链路", symbol: "arrow.clockwise", action: #selector(forceProbe)))
         menu.addItem(menuItem(aiMatrixSummary, symbol: "globe.americas",
                               action: #selector(showAIMatrix)))
-        menu.addItem(menuItem("查看事件日志", symbol: "list.bullet.rectangle", action: #selector(openLog)))
+        menu.addItem(menuItem("查看 GPT 节点状态与事件", symbol: "list.bullet.rectangle", action: #selector(openLog)))
         if recoveryBlocked || !snapshot.networkHealthy {
             menu.addItem(menuItem("打开 Shadowrocket 手动处理", symbol: "network",
                                   action: #selector(openShadowrocket)))
@@ -709,18 +735,99 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return Array(lines.filter { !$0.isEmpty }.suffix(220))
     }
 
+    private func nodeEvidenceText() -> String {
+        let group = snapshot.nativeFallbackGroup.isEmpty ? "未配置" : snapshot.nativeFallbackGroup
+        let backend: String
+        if snapshot.fresh && snapshot.backendVerified && !snapshot.actualBackendName.isEmpty {
+            backend = snapshot.actualBackendName + "（原生证据已核实）"
+        } else {
+            backend = "实时节点名：未核实（Shadowrocket 未提供可靠的组内后端读取接口）"
+        }
+        let lastVerified = snapshot.userLastVerifiedNode.isEmpty
+            ? "无人工核实记录"
+            : "\(snapshot.userLastVerifiedNode)（\(snapshot.userLastVerifiedDate) 界面截图；仅当时选中）"
+        let candidates = snapshot.screenshotCandidates.isEmpty
+            ? "未获得可靠候选名单"
+            : snapshot.screenshotCandidates.joined(separator: "、")
+        let edge = snapshot.fresh && snapshot.networkHealthy && snapshot.egressObserved
+            ? [snapshot.egressCountry, snapshot.egressColo].filter { !$0.isEmpty }.joined(separator: "-")
+            : "待确认"
+        let edgeIP = snapshot.fresh && snapshot.networkHealthy && snapshot.egressObserved
+            ? snapshot.egressIP : "未观测"
+        let health = snapshot.fresh
+            ? (snapshot.networkHealthy ? "公共入口可达" : "公共入口异常") : "状态已过期"
+        let business = snapshot.business == "attention" ? "有近期业务异常" : "近期未检测到业务异常"
+        let lastOutage = snapshot.lastEdgeOutage.isEmpty
+            ? "未记录" : "\(snapshot.lastEdgeOutage["observed_at"] as? String ?? "未知时间")；"
+                + "采样中断 \(snapshot.lastEdgeOutage["sampled_outage_seconds"] ?? "未知") 秒"
+        let changes = snapshot.observedEgressHistory.suffix(6).map { event -> String in
+            let moment = event["observed_at"] as? String ?? "时间未确认"
+            let former = event["geo_before"] as? String ?? "?"
+            let current = event["geo_after"] as? String ?? "?"
+            let linked = (event["preceded_by_recent_public_outage"] as? Bool ?? false)
+                ? "；附近曾有公共入口中断" : ""
+            return "  · \(moment)  出口：\(former) → \(current)\(linked)"
+        }.joined(separator: "\n")
+        return """
+            GPT 节点状态与事件
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            策略分组：\(group)  ·  原生 fallback
+            当前组内实际节点：\(backend)
+            上次人工确认：\(lastVerified)
+            上次确认候选：\(candidates)
+
+            当前 GPT 公共入口：\(health)
+            客户端业务状态：\(business)
+            实际出口地区：\(edge)
+            出口 IP（技术参考）：\(edgeIP)
+            Shadowrocket 全局节点：\(globalNode)
+
+            自然故障留证
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            最近公共入口恢复：\(lastOutage)
+            最近出口变化：
+            \(changes.isEmpty ? "  暂无连续两次确认的出口变化" : changes)
+
+            订阅迁移注意
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            当前 fallback 只绑定指定订阅，不能自动跟随新机场。
+            订阅自身更新可刷新候选，但不同机场的节点名可能
+            不匹配当前正则筛选条件。换机场后请先检查分组候选数、
+            重新指定「服务器节点」及筛选规则，再确认 GPT 规则命中。
+            不会自动导入或读取订阅链接、密码等凭据。
+
+            数据可信度说明
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            · 上次人工确认的节点不等于此刻实际使用的节点。
+            · IP/地区只证明当前网络出口，不能反推出机场节点名。
+            · 只有 Shadowrocket 原生代理日志/受支持的运行时节点记录，
+              才能独立核实每次 GPT 请求的具体节点。
+            · 如要继续集成，请在 Shadowrocket「数据 → 代理」
+              查看是否开启日志，再提供一条脱敏的 GPT 请求记录。
+            """
+    }
+
     private func refreshLogWindow() {
-        let historical = logPicker?.indexOfSelectedItem == 1
-        let rows = logLines(historyOnly: historical)
+        let mode = logPicker?.indexOfSelectedItem ?? 0
+        let historical = mode == 2
+        let rows = mode == 0 ? [] : logLines(historyOnly: historical)
         let pattern = #"(?i)([?&](?:token|key|auth|password|secret)=)[^\s&]+"#
-        logTextView?.string = rows.isEmpty
-            ? "暂无相关事件。网络守护仍在运行，最近没有记录到该类型的日志。"
-            : rows.map { $0.replacingOccurrences(of: pattern, with: "$1[redacted]",
-                                                  options: .regularExpression) }.joined(separator: "\n")
-        logTextView?.scrollToEndOfDocument(nil)
-        logSummary?.stringValue = historical
-            ? "仅列出切换、连接失败及恢复事件 · 最近 220 条"
-            : "守护进程运行记录 · 最近 220 条 · 不包含聊天内容"
+        logTextView?.string = mode == 0
+            ? nodeEvidenceText()
+            : rows.isEmpty
+                ? "暂无相关事件。网络守护仍在运行，最近没有记录到该类型的日志。"
+                : rows.map { $0.replacingOccurrences(of: pattern, with: "$1[redacted]",
+                                                      options: .regularExpression) }.joined(separator: "\n")
+        if mode == 0 {
+            logTextView?.scrollToBeginningOfDocument(nil)
+        } else {
+            logTextView?.scrollToEndOfDocument(nil)
+        }
+        logSummary?.stringValue = mode == 0
+            ? "按节点优先展示 · 来源已标注 · 不读取聊天或订阅凭据"
+            : historical
+                ? "仅列出切换、连接失败及恢复事件 · 最近 220 条"
+                : "守护进程运行记录 · 最近 220 条 · 不包含聊天内容"
     }
 
     @objc private func changeLogMode(_ sender: NSPopUpButton) { refreshLogWindow() }
@@ -736,7 +843,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 565),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
-        window.title = "TunnelSentinel · 事件记录"
+        window.title = "TunnelSentinel · GPT 节点与事件"
         window.minSize = NSSize(width: 600, height: 360)
         window.isReleasedWhenClosed = false
         window.center()
@@ -746,17 +853,17 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         background.blendingMode = .withinWindow
         background.autoresizingMask = [.width, .height]
         content.addSubview(background)
-        let topTitle = label("网络事件", font: .systemFont(ofSize: 22, weight: .semibold),
+        let topTitle = label("GPT 节点与事件", font: .systemFont(ofSize: 22, weight: .semibold),
                              color: .labelColor, frame: NSRect(x: 22, y: 508, width: 275, height: 31))
         topTitle.autoresizingMask = [.minYMargin]
         background.addSubview(topTitle)
-        let desc = label("连接状态、自动恢复与诊断记录",
+        let desc = label("节点身份、订阅迁移与恢复证据",
                          font: .systemFont(ofSize: 12), color: .secondaryLabelColor,
                          frame: NSRect(x: 22, y: 486, width: 340, height: 19))
         desc.autoresizingMask = [.minYMargin]
         background.addSubview(desc)
         let picker = NSPopUpButton(frame: NSRect(x: 535, y: 499, width: 195, height: 27))
-        picker.addItems(withTitles: ["最近运行日志", "异常与切换"])
+        picker.addItems(withTitles: ["GPT 节点状态", "最近运行日志", "异常与切换"])
         picker.target = self
         picker.action = #selector(changeLogMode(_:))
         picker.autoresizingMask = [.minXMargin, .minYMargin]

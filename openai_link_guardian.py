@@ -27,7 +27,7 @@ from urllib.parse import urlencode, urlparse
 
 
 APP_NAME = "OpenAILinkGuardian"
-VERSION = "1.4.4"
+VERSION = "1.4.6"
 DEFAULT_HOME = Path.home() / "Library" / "Application Support" / APP_NAME
 DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 DEFAULT_STATUS = DEFAULT_HOME / "status.json"
@@ -95,6 +95,7 @@ ISSUE_WINDOW_SECONDS = 180
 ISSUE_LABELS = {
     "cloudflare": "ChatGPT 安全验证",
     "rate_limit": "ChatGPT 请求受限",
+    "thread_sync": "会话列表同步失败",
     "connection": "ChatGPT 连接中断",
     "pubsub": "消息推送持续断开",
     "layout": "客户端布局异常",
@@ -435,6 +436,11 @@ class LogWatcher:
             "Too many requests", "fetch failed (429)", "HTTP 429"
         )):
             return "rate_limit"
+        # A 403 from the authenticated thread catalog is a real desktop
+        # sync failure even when the unauthenticated public edge returns 200.
+        # It is a business diagnostic, never a reason to rotate proxy nodes.
+        if "Thread catalog sync failed" in line:
+            return "thread_sync"
         if "ERR_CONNECTION_CLOSED" in line or "ERR_PROXY_CONNECTION_FAILED" in line:
             return "connection"
         if "ResizeObserver loop completed with undelivered notifications" in line:

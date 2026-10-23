@@ -44,6 +44,7 @@ class GuardianTests(unittest.TestCase):
         cases = {
             "cloudflare_challenge": "cloudflare",
             'Thread catalog sync failed errorMessage="Authenticated desktop fetch failed (429)"': "rate_limit",
+            'Thread catalog sync failed errorMessage="Authenticated desktop fetch failed (403)"': "thread_sync",
             'sa_server_request_failed errorMessage="Too many requests"': "rate_limit",
             "sa_server_request_failed net::ERR_CONNECTION_CLOSED": "connection",
             "ResizeObserver loop completed with undelivered notifications": "layout",
@@ -65,10 +66,11 @@ class GuardianTests(unittest.TestCase):
             with log_file.open("a", encoding="utf-8") as out:
                 out.write("sa_server_request_failed errorCode=cloudflare_challenge\n")
                 out.write('Authenticated desktop fetch failed (429)\n')
+                out.write('Thread catalog sync failed errorMessage="Authenticated desktop fetch failed (403)"\n')
                 out.write("ResizeObserver loop completed with undelivered notifications\n" * 3)
             self.assertEqual(watcher.read_new_failures(), [])
             categories = {issue["category"] for issue in watcher.issue_summary()}
-            self.assertEqual(categories, {"cloudflare", "rate_limit", "layout"})
+            self.assertEqual(categories, {"cloudflare", "rate_limit", "thread_sync", "layout"})
             config = dict(guardian.DEFAULTS)
             logger = logging.getLogger("issue-status-test")
             logger.addHandler(logging.NullHandler())
@@ -85,7 +87,7 @@ class GuardianTests(unittest.TestCase):
             self.assertTrue(status["healthy"])
             self.assertEqual(status["overall_status"], "attention")
             self.assertEqual(status["business_status"], "attention")
-            self.assertEqual(len(status["business_issues"]), 3)
+            self.assertEqual(len(status["business_issues"]), 4)
             self.assertGreater(status["pid"], 1)
 
     def test_recent_warning_survives_guardian_restart_without_auto_switch(self):

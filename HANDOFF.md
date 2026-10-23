@@ -1,6 +1,14 @@
 # TunnelSentinel — Handoff
 
-**Snapshot:** 2026-10-22 ~22:10 CST · Mac mini · `/Volumes/ExtSSD/tools/TunnelSentinel`.
+## Latest verified update · 2026-10-23 14:54 CST
+
+- User reports frequent failures loading conversations in the macOS ChatGPT desktop app. On Mac mini, runtime Guardian `v1.4.4` was healthy by public-edge probe, but short failures were logged near 14:34 and 14:39 (each followed by recovery). Actual desktop logs recorded `Thread catalog sync failed` with authenticated HTTP **403** at 14:43, followed by `cloudflare_challenge` events and recurrent PubSub close/open events. These events correlate with the symptom but do not uniquely prove one node or one domain is at fault.
+- An anonymous curl via the existing local proxy returned HTTP 200 for public `chatgpt.com/cdn-cgi/trace`, HTTP 404 for `ws.chatgpt.com/`, and an SSL handshake failure for `desktop.chat.openai.com`. These differing anonymous responses are **diagnostic observations only**, not an authenticated desktop-app end-to-end verdict.
+- Scoped fix: Guardian `v1.4.6` now separately classifies real `Thread catalog sync failed` events as `thread_sync` / `会话列表同步失败`, preserving 429 classification precedence. Event appears in the existing business issue list for three minutes; public-edge `healthy` stays independent, and business 403 never triggers node rotation. Python 41 tests + `py_compile` and `git diff --check` passed.
+- **LIVE:** Source was copied atomically to existing `~/Library/Application Support/OpenAILinkGuardian/openai_link_guardian.py` after backup at `backups/thread-sync-before-v146-20261023/`; only Guardian LaunchAgent restarted. Live status 14:53:42 reports v1.4.6, healthy, native fallback `OpenAI-Resilience` enabled, public egress US-SEA; ChatGPT, Shadowrocket and menu bar PIDs unchanged. Live `config.json` SHA-256 unchanged. No forced node failure / WebSocket lifetime test was performed.
+- **Next safe investigation:** Shadowrocket native **测试规则** against official desktop/auth/Cloudflare challenge/WebSocket domains. Compare routing and log times when the next session-list failure occurs. Do not treat an anonymous TLS/403 response or one public HTTP 200 as definitive. The real failover fault-injection gate remains open and needs separate user permission.
+
+**Historical snapshot (below):** 2026-10-22 ~22:10 CST · Mac mini · `/Volumes/ExtSSD/tools/TunnelSentinel`.
 Always re-check `git status -sb`, HEAD, status.json and running LaunchAgents before acting. Current branch: `feature/tunnelsentinel-health-dashboard-20261022`.
 
 ## Present capabilities and real acceptance

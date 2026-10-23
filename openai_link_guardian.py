@@ -29,7 +29,7 @@ from urllib.parse import urlencode, urlparse
 
 
 APP_NAME = "OpenAILinkGuardian"
-VERSION = "1.5.1"
+VERSION = "1.5.2"
 DEFAULT_HOME = Path.home() / "Library" / "Application Support" / APP_NAME
 DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 DEFAULT_STATUS = DEFAULT_HOME / "status.json"
@@ -614,6 +614,13 @@ class Guardian:
         self.edge_outage_started_at: Optional[float] = None
         self.edge_outage_previous_ip = ""
         self.last_public_edge_incident: dict = {}
+        # Passive, 2-sample-confirmed egress history. This is not a verified
+        # Shadowrocket backend switch and never controls the proxy.
+        self.confirmed_egress: tuple[str, str, str] | None = None
+        self.pending_egress: tuple[str, str, str] | None = None
+        self.pending_egress_count = 0
+        self.egress_changed_at: list[dict] = []
+        self.last_edge_recovered_at = 0.0
         self.ai_matrix_lock = threading.Lock()
         self.ai_matrix_started_at = 0.0
         self.ai_matrix_running = False
@@ -631,6 +638,14 @@ class Guardian:
         self.refresh_requested = False
         previous_status = self._load_previous_status()
         self.manual_pause = bool(previous_status.get("manual_pause", False))
+        stored_changes = previous_status.get("egress_change_history", [])
+        if isinstance(stored_changes, list):
+            self.egress_changed_at = [
+                e for e in stored_changes[-6:]
+                if isinstance(e, dict) and
+                e.get("evidence") == "confirmed_public_edge_egress_change" and
+                e.get("native_backend_switch_verified") is False
+            ]
         nodes = list(config.get("nodes", []))
         previous_node = previous_status.get("current_node")
         observed_node = current_shadowrocket_node()
@@ -769,11 +784,63 @@ class Guardian:
         # desktop-app log entries.
         return any(result.transport_ok and result.http_code == 200 for result in results)
 
+    def observe_egress_change(self, results: list[ProbeResult], healthy: bool) -> None:
+        """Observe *outbound IP* changes, not provider node switches.
+
+        The same proxy server may use multiple outgoing IPs. Two consecutive
+        healthy samples are required to ignore one-off connection variance.
+        """
+        sample = next(
+            (r for r in results if r.transport_ok and r.http_code == 200 and r.egress_ip), None
+        )
+        if not healthy or sample is None:
+            self.pending_egress = None
+            self.pending_egress_count = 0
+            return
+        current = (sample.egress_ip, sample.egress_country, sample.egress_colo)
+        if self.pending_egress == current:
+            self.pending_egress_count += 1
+        else:
+            self.pending_egress = current
+            self.pending_egress_count = 1
+        if self.pending_egress_count < 2:
+            return
+        old = self.confirmed_egress
+        if old is None:
+            self.confirmed_egress = current
+        elif current[0] != old[0]:
+            recent_outage = (
+                self.last_edge_recovered_at > 0
+                and time.monotonic() - self.last_edge_recovered_at <= 180
+            )
+            item = {
+                "observed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "egress_before": old[0],
+                "egress_after": current[0],
+                "geo_before": "-".join(x for x in old[1:] if x),
+                "geo_after": "-".join(x for x in current[1:] if x),
+                "preceded_by_recent_public_outage": recent_outage,
+                "confirmation": "2_consecutive_healthy_probes",
+                "evidence": "confirmed_public_edge_egress_change",
+                "native_backend_switch_verified": False,
+            }
+            self.egress_changed_at.append(item)
+            self.egress_changed_at = self.egress_changed_at[-6:]
+            self.confirmed_egress = current
+            self.logger.info(
+                "public edge egress changed; 2 healthy probes confirmed; "
+                "recent_public_outage=%s; native_backend_switch_verified=false",
+                recent_outage,
+            )
+        else:
+            self.confirmed_egress = current
+
     def observe_edge_incident(self, results: list[ProbeResult], healthy: bool) -> None:
         """Record failure-to-recovery evidence without taking node control."""
         observed = next((r.egress_ip for r in results
                          if r.transport_ok and r.http_code == 200 and r.egress_ip), "")
         now = time.monotonic()
+        self.observe_egress_change(results, healthy)
         if not healthy:
             if self.edge_outage_started_at is None:
                 self.edge_outage_started_at = now
@@ -796,6 +863,7 @@ class Guardian:
                 self.last_public_edge_incident["sampled_outage_seconds"],
                 self.last_public_edge_incident["egress_changed"],
             )
+            self.last_edge_recovered_at = now
             self.edge_outage_started_at = None
             self.edge_outage_previous_ip = ""
         if observed:
@@ -961,6 +1029,8 @@ class Guardian:
             "business_issues": issues,
             "issue_window_seconds": ISSUE_WINDOW_SECONDS,
             "last_public_edge_incident": self.last_public_edge_incident,
+            "egress_change_history": self.egress_changed_at[-6:],
+            "egress_history_scope": "2 healthy samples; outbound IP only, not confirmed server change",
             "public_edge_outage_pending": self.edge_outage_started_at is not None,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "healthy": healthy,

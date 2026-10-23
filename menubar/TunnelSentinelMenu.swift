@@ -43,6 +43,10 @@ private struct Snapshot {
     var aiMatrixRunning = false
     var aiMatrixCheckedAt = ""
     var aiMatrixSites: [AISiteCheck] = []
+    var lastEgressChangeAt = ""
+    var lastEgressChangeFrom = ""
+    var lastEgressChangeTo = ""
+    var lastEgressChangeWithOutage = false
     var endpointMethodResult = ""
     var endpointHeadCode = 0
     var endpointGetCode = 0
@@ -176,6 +180,15 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             next.endpointMethodResult = audit["result"] as? String ?? ""
             next.endpointHeadCode = audit["head_code"] as? Int ?? 0
             next.endpointGetCode = audit["get_code"] as? Int ?? 0
+        }
+        if let events = values["egress_change_history"] as? [[String: Any]],
+           let latest = events.last,
+           latest["native_backend_switch_verified"] as? Bool == false,
+           latest["evidence"] as? String == "confirmed_public_edge_egress_change" {
+            next.lastEgressChangeAt = latest["observed_at"] as? String ?? ""
+            next.lastEgressChangeFrom = latest["geo_before"] as? String ?? ""
+            next.lastEgressChangeTo = latest["geo_after"] as? String ?? ""
+            next.lastEgressChangeWithOutage = latest["preceded_by_recent_public_outage"] as? Bool ?? false
         }
         if let sites = values["ai_matrix_sites"] as? [[String: Any]] {
             next.aiMatrixSites = sites.compactMap { item in
@@ -527,9 +540,23 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                 不等于节点支持 ChatGPT 登录、对话或 API。
                 其他 AI 网站的失败不会触发 ChatGPT 切换。
                 \(methodAuditDescription)
+                \(egressHistoryDescription)
                 """
         }
         dialog.runModal()
+    }
+
+    private var egressHistoryDescription: String {
+        guard !snapshot.lastEgressChangeAt.isEmpty else { return "" }
+        let former = snapshot.lastEgressChangeFrom.isEmpty ? "地区未确认" : snapshot.lastEgressChangeFrom
+        let latest = snapshot.lastEgressChangeTo.isEmpty ? "地区未确认" : snapshot.lastEgressChangeTo
+        let nearby = snapshot.lastEgressChangeWithOutage ? "；附近记录有公共入口中断" : ""
+        return """
+
+            最近观测到出口变化：\(former) → \(latest)
+            时间：\(snapshot.lastEgressChangeAt)\(nearby)
+            该变化经两次成功探测确认，但不能证明机场节点已切换。
+            """
     }
 
     private var methodAuditDescription: String {
@@ -567,6 +594,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             String(snapshot.recoveryRetrySeconds),
             snapshot.issues.map { "\($0.title):\($0.count)" }.joined(separator: "|"),
             aiMatrixSummary, snapshot.aiMatrixCheckedAt,
+            snapshot.lastEgressChangeAt, snapshot.lastEgressChangeFrom,
+            snapshot.lastEgressChangeTo, String(snapshot.lastEgressChangeWithOutage),
             snapshot.endpointMethodResult, String(snapshot.endpointHeadCode),
             String(snapshot.endpointGetCode),
             snapshot.aiMatrixSites.map { "\($0.domain):\($0.status):\($0.location)" }.joined(separator: "|")

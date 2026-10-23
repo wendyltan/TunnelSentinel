@@ -184,3 +184,19 @@ Always re-check `git status -sb`, HEAD, status.json and running LaunchAgents bef
 
 
 - Supplementary 2.2.92 release notes: `feature(group): 独立 Ping 延迟自动排序选项`; `fix(vpn): 防止过期连通性测试意外重置 VPN 状态`. Neither proves fallback's HTTP method. Read-only GUI review must note both the manual-test auto-select toggle and Ping sort, and leave them unchanged. No vendor-supported read-only per-node background method API found after targeted search, public unified-log scan and binary-string scan.
+
+
+## 2026-10-23 18:4x CST — User validated four candidates and passive egress evidence
+
+- User's screenshot of Shadowrocket `OpenAI-Resilience` group directly shows `fallback` with four candidates: `USA Seattle 05` **108 ms selected**, `USA San Jose 07` 263 ms, `Japan 04` 110 ms, `Japan 14` 107 ms. “根据 Ping 排序” **off** and “测试并选择最快服务器” **off**. This was read-only; the user did not click “测试” or change any settings. Manual test and background auto-test remain different evidence layers (see Shadowrocket wiki). P0 screenshot verification closed, but backend method still NOT YET VERIFIED.
+- Added passive v1.5.2 probe-sampled `egress_change_history`: bounded last 6 events on two consecutive good probes of the same new IP, after an established baseline; record time, geo before/after, whether public outage recovered recently, and `native_backend_switch_verified=false`. It tracks observable exit identity, **not** node identity or authenticated ChatGPT functionality. Existing probes reused, no extra requests/rotation. A one-off flapping IP or failed probe does not create an event.
+- Existing AI matrix menu dialog shows latest egress change and clear confidence label; menu status bar/main health status untouched.
+- Regression suite 58 tests passed (including 4 new cases), menu Swift builds. Deployment and real runtime post-install audit required; no Shadowrocket settings changed or forced outage conducted.
+
+
+## 2026-10-23 18:55 CST — Passive egress history v1.5.2 deployed
+
+- Installer baseline checked `v1.5.1 healthy=true route_management=native_fallback`; live guardian script/config/status backed up privately to `~/Library/Application Support/OpenAILinkGuardian/backups/egress-history-before-v152-20261023/`. No changes to Shadowrocket profile, subscription, routing, Tailscale or DNS. Guardian and signed menu app updated to **v1.5.2**; Shadowrocket PID 728 / tunnel PID 5940 continued without restart.
+- Live `status.json` has `version=1.5.2`, `healthy=true`, `overall_status=reachable`, `business_status=no_recent_errors`, `route_management=native_fallback`, `egress_change_history=[]`, `egress_history_scope='2 healthy samples; outbound IP only, not confirmed server change'`. Empty list is correct immediately after deployment with no observed confirmed changes. Original HTTP proxy `127.0.0.1:1082` returned ChatGPT public edge **HTTP 200**, menu title `● 基础正常 · 出 US-SEA · 全 上次 Japan 04`.
+- 58 Python regressions **PASS** including four new passive-egress tests; signed menu Swift build **PASS**; installer verification **PASS**; user visual acceptance of the expanded matrix details **NOT RUN**. History is intentionally not treated as an actual Shadowrocket node switch. The runtime sampler makes no additional HTTP requests, does not choose a node and limits retained event history to six.
+- Screenshot verification from the user shows Seattle 05 checked in group with four candidates and **both** Ping sort and manually test-select-fastest toggles OFF. No artificial outage initiated; backend fallback HTTP test method still not provable through GUI manual latency.

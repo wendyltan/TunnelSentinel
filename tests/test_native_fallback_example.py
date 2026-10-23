@@ -3,6 +3,7 @@ import unittest
 
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples/shadowrocket-openai-fallback.fragment.conf"
+OVERLAY = Path(__file__).resolve().parents[1] / "examples/shadowrocket-openai-domain-overlay.fragment.conf"
 DOMAINS = ("chatgpt.com", "openai.com", "oaistatic.com", "oaiusercontent.com", "oaistatsig.com", "openaimerge.com")
 
 
@@ -35,6 +36,15 @@ class NativeFallbackDraftTests(unittest.TestCase):
         expected = {f"DOMAIN-SUFFIX,{domain},OpenAI-Resilience" for domain in DOMAINS}
         self.assertEqual(set(rules), expected)
         self.assertEqual(len(rules), len(expected))
+
+    def test_domain_overlay_enables_only_openai_owned_suffixes(self):
+        lines = [line.strip() for line in OVERLAY.read_text(encoding="utf-8").splitlines()
+                 if line.strip() and not line.lstrip().startswith("#")]
+        self.assertEqual(lines, [
+            "[Rule]",
+            "DOMAIN-SUFFIX,oaistatsig.com,OpenAI-Resilience",
+            "DOMAIN-SUFFIX,openaimerge.com,OpenAI-Resilience",
+        ])
 
     def test_example_contains_no_subscription_endpoint_or_credentials(self):
         for sensitive in ("password=", "token=", "privateKey=", "user=",

@@ -17,7 +17,9 @@
 - [ ] 若 Shadowrocket 后续提供只读、可验证的分组后端名称 API 或代理日志接口，用实际节点名替代出口地区，严格标记时间和缓存失效；不要通过写死 Seattle 05、扫描订阅密钥或频繁打开 GUI 来伪造实时值。
 - [ ] **P0：失效切换真实验收**。尚未故意使当前出口失效以验证自动改选、恢复耗时及客户端 WebSocket 稳定性。需安排经过许可的可回退故障注入；平时监控不等于此验收。
 - [x] 将 Mac 客户端实际 `Thread catalog sync failed`（已见 HTTP 403）加入独立的会话同步告警；公共探测仍不据此自动轮换节点。
-- [ ] 对照 OpenAI 官方联网域名清单，使用 Shadowrocket **测试规则**逐项核实 `desktop.chat.openai.com`、`challenges.cloudflare.com`、`auth.openai.com` 及 WebSocket 域名是否按预期分流；仅依据匿名 curl SSL 错误不能判断登录会话真实路由故障。
+- [x] 对照 OpenAI 官方清单完成第三方 OpenAI 规则集静态覆盖核查：识别 `oaistatsig.com`、`openaimerge.com` 两个 OpenAI 独有域名遗漏，准备未启用的安全补充片段，并区分共享 Cloudflare/WorkOS 域名风险（`research/openai-route-and-failover-audit-20261023.md`）。
+- [x] 守护后台增加被动公共入口故障/恢复留证，不把出口变化伪称为 Shadowrocket 已切换节点，不重启 ChatGPT/Shadowrocket。
+- [ ] 使用 Shadowrocket **测试规则**逐项核实 `desktop.chat.openai.com`、`challenges.cloudflare.com`、`auth.openai.com`、WorkOS 及 WebSocket 域名是否按预期分流；确认必要性后，使用 App 原生编辑器应用最小补充片段。仅凭匿名 curl SSL 错误不能判断登录会话真实路由故障。
 - [ ] 长期检查 ChatGPT 客户端、Codex 连接的错误收敛与反复切换风险。
 - [ ] Human visual acceptance of menu recovery state and action.
 

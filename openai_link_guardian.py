@@ -27,7 +27,7 @@ from urllib.parse import urlencode, urlparse
 
 
 APP_NAME = "OpenAILinkGuardian"
-VERSION = "1.4.6"
+VERSION = "1.4.7"
 DEFAULT_HOME = Path.home() / "Library" / "Application Support" / APP_NAME
 DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 DEFAULT_STATUS = DEFAULT_HOME / "status.json"
@@ -580,6 +580,12 @@ class Guardian:
         self.recovery_retry_at = 0.0
         self.manual_override_until = 0.0
         self.last_probe_results: list[ProbeResult] = []
+        # Passive evidence of actual public-edge outages; never equate an
+        # IP change with verified Shadowrocket backend selection.
+        self.edge_last_healthy_ip = ""
+        self.edge_outage_started_at: Optional[float] = None
+        self.edge_outage_previous_ip = ""
+        self.last_public_edge_incident: dict = {}
         self.healthy_streak_node: Optional[str] = None
         self.healthy_streak_count = 0
         self.learned_good_nodes = read_known_good_nodes(
@@ -656,6 +662,38 @@ class Guardian:
         # proxy/TLS path; real backend and websocket failures come from new
         # desktop-app log entries.
         return any(result.transport_ok and result.http_code == 200 for result in results)
+
+    def observe_edge_incident(self, results: list[ProbeResult], healthy: bool) -> None:
+        """Record failure-to-recovery evidence without taking node control."""
+        observed = next((r.egress_ip for r in results
+                         if r.transport_ok and r.http_code == 200 and r.egress_ip), "")
+        now = time.monotonic()
+        if not healthy:
+            if self.edge_outage_started_at is None:
+                self.edge_outage_started_at = now
+                self.edge_outage_previous_ip = self.edge_last_healthy_ip
+            return
+        if self.edge_outage_started_at is not None:
+            before = self.edge_outage_previous_ip
+            self.last_public_edge_incident = {
+                "observed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "sampled_outage_seconds": round(now - self.edge_outage_started_at, 1),
+                "egress_before": before,
+                "egress_after": observed,
+                "egress_changed": bool(before and observed and before != observed),
+                "native_backend_switch_verified": False,
+                "evidence": "public_edge_probes_only",
+            }
+            self.logger.warning(
+                "public edge reachable again sampled_outage_s=%.1f egress_changed=%s "
+                "backend_switch_verified=false",
+                self.last_public_edge_incident["sampled_outage_seconds"],
+                self.last_public_edge_incident["egress_changed"],
+            )
+            self.edge_outage_started_at = None
+            self.edge_outage_previous_ip = ""
+        if observed:
+            self.edge_last_healthy_ip = observed
 
     def record_failures(self, count: int) -> None:
         now = time.monotonic()
@@ -794,6 +832,8 @@ class Guardian:
             "known_good_candidates": self.known_good_candidates()[:12],
             "business_issues": issues,
             "issue_window_seconds": ISSUE_WINDOW_SECONDS,
+            "last_public_edge_incident": self.last_public_edge_incident,
+            "public_edge_outage_pending": self.edge_outage_started_at is not None,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "healthy": healthy,
             "current_node": self.current_node,
@@ -871,6 +911,8 @@ class Guardian:
 
             if self.manual_pause:
                 results = [ProbeResult("proxy", False, 0, False, 0.0, "manually paused")]
+                self.edge_outage_started_at = None  # Intentional disconnect is not a failover incident.
+                self.edge_outage_previous_ip = ""
                 self.failure_times.clear()
                 self.write_status(
                     results,
@@ -888,6 +930,7 @@ class Guardian:
                 healthy, results = self.recover_missing_tunnel()
                 proxy_available = proxy_endpoint_available(self.config["proxy"])
             if healthy:
+                self.observe_edge_incident(results, True)
                 self.write_status(
                     results,
                     0,
@@ -898,6 +941,7 @@ class Guardian:
                 return True
             if not results:
                 results = [ProbeResult("proxy", False, 0, False, 0.0, "listener unavailable")]
+            self.observe_edge_incident(results, False)
             self.record_failures(1)
             self.write_status(
                 results,
@@ -918,6 +962,7 @@ class Guardian:
             self.manual_pause = False
         results = self.probe_all()
         healthy = self.path_is_healthy(results)
+        self.observe_edge_incident(results, healthy)
         log_failures = self.log_watcher.read_new_failures()
         if log_failures:
             self.logger.warning("new ChatGPT network log failures=%d", len(log_failures))
@@ -933,6 +978,7 @@ class Guardian:
             if self.recovery_state not in ("selector_unavailable","no_candidates",
                                            "candidate_unhealthy"):
                 self.recovery_state = "degraded"
+        switch_required = self.should_switch()
         self.write_status(
             results,
             len(log_failures),
@@ -947,7 +993,7 @@ class Guardian:
             len(self.failure_times),
             self._probe_summary(results),
         )
-        if self.should_switch():
+        if switch_required:
             recovered = self.attempt_failover()
             self.write_status(
                 self.last_probe_results if recovered else results,

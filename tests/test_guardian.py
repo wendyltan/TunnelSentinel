@@ -343,6 +343,62 @@ class GuardianTests(unittest.TestCase):
             switch.assert_not_called()
             self.assertEqual(len(svc.failure_times), 0)
 
+    def test_passive_native_failover_evidence_never_claims_backend_switch(self):
+        config = dict(guardian.DEFAULTS)
+        config["native_fallback_enabled"] = True
+        with tempfile.TemporaryDirectory() as tmp:
+            status_path = Path(tmp) / "status.json"
+            svc = guardian.Guardian(config, logging.getLogger("passive-evidence"), status_path)
+            old = guardian.ProbeResult("edge", True, 200, False, .1, "", "1.2.3.4", "SEA", "US")
+            new = guardian.ProbeResult("edge", True, 200, False, .1, "", "5.6.7.8", "NRT", "JP")
+            failed = guardian.ProbeResult("edge", False, 0, False, 10)
+            svc.observe_edge_incident([old], True)
+            svc.observe_edge_incident([failed], False)
+            svc.write_status([failed], 0, False)
+            self.assertTrue(guardian.json.loads(status_path.read_text())["public_edge_outage_pending"])
+            with mock.patch.object(svc, "attempt_failover") as switch:
+                svc.observe_edge_incident([new], True)
+            switch.assert_not_called()
+            svc.write_status([new], 0, True)
+            status = guardian.json.loads(status_path.read_text())
+            incident = status["last_public_edge_incident"]
+            self.assertFalse(status["public_edge_outage_pending"])
+            self.assertTrue(incident["egress_changed"])
+            self.assertFalse(incident["native_backend_switch_verified"])
+            self.assertEqual(incident["egress_before"], "1.2.3.4")
+            self.assertEqual(incident["egress_after"], "5.6.7.8")
+            self.assertGreaterEqual(incident["sampled_outage_seconds"], 0)
+
+    def test_no_egress_sample_never_proves_native_switch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            svc = guardian.Guardian(dict(guardian.DEFAULTS),
+                                    logging.getLogger("no-egress-evidence"),
+                                    Path(tmp) / "status.json")
+            bad = guardian.ProbeResult("edge", False, 0, False, 1)
+            recovered_without_ip = guardian.ProbeResult("edge", True, 200, False, 1)
+            svc.observe_edge_incident([bad], False)
+            svc.observe_edge_incident([recovered_without_ip], True)
+            self.assertFalse(svc.last_public_edge_incident["egress_changed"])
+            self.assertFalse(svc.last_public_edge_incident["native_backend_switch_verified"])
+
+    def test_native_outage_state_is_visible_before_passive_wait(self):
+        config = dict(guardian.DEFAULTS)
+        config["native_fallback_enabled"] = True
+        bad = guardian.ProbeResult("edge", False, 0, False, 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            status_path = Path(tmp) / "status.json"
+            with mock.patch.object(guardian, "current_shadowrocket_node", return_value="global"):
+                svc = guardian.Guardian(config, logging.getLogger("native-state"), status_path)
+                with mock.patch.object(guardian, "proxy_endpoint_available", return_value=True), \
+                     mock.patch.object(svc, "probe_all", return_value=[bad]), \
+                     mock.patch.object(svc.log_watcher, "read_new_failures", return_value=[]), \
+                     mock.patch.object(svc, "attempt_failover") as switch:
+                    self.assertFalse(svc.cycle())
+            switch.assert_not_called()
+            status = guardian.json.loads(status_path.read_text())
+            self.assertEqual(status["recovery_state"], "native_fallback_waiting")
+            self.assertTrue(status["public_edge_outage_pending"])
+
     def test_native_fallback_never_calls_broken_external_selector(self):
         cfg = dict(guardian.DEFAULTS)
         cfg["startup_grace_seconds"] = 0

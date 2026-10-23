@@ -122,6 +122,8 @@ Shadowrocket 本地代理
 | 菜单健康状态读取 | 每 5 秒 |
 | 节点信息尝试更新 | 约每 2 秒，受系统权限影响 |
 
+**最近一次公共入口恢复留证：** 守护后台在发现入口探测失败、随后恢复时，会在本地 `status.json` 记录 `last_public_edge_incident`（采样中断时间、恢复前后出口 IP、是否观察到出口变化）与 `public_edge_outage_pending`。它只证明公开探测的状态变化，`native_backend_switch_verified` 恒为 `false`，直到有独立的 Shadowrocket 原生切换证据；不会据此强制换节点，也不会读取聊天正文。手动断开隧道不计入自动切换案例。
+
 **节点读取权限边界：** 部分 macOS 版本会限制第三方进程访问 Shadowrocket 的 App Group 偏好设置。工具会限制读取耗时，并在系统阻塞时停止自动重试；此时节点显示为“未核实”，但基础链路巡检仍继续进行。这里的 2 秒是权限允许时的目标，不是所有设备上都已实现的保证。
 
 ## Shadowrocket 原生故障转移（分阶段启用）
@@ -130,7 +132,7 @@ Shadowrocket 本地代理
 
 本仓库提供不包含订阅密钥的 [fallback 配置片段](examples/shadowrocket-openai-fallback.fragment.conf) 和 [安全启用与回退步骤](research/shadowrocket-native-failover.md)。安装程序**不会直接修改 Shadowrocket 配置**；分组必须通过 Shadowrocket 自身的配置机制创建，确保规则确实命中再启用。
 
-2026 年 10 月的本地试点已验证：在保留原配置的前提下创建了 `OpenAI-Resilience` 组，启用测试配置后 `chatgpt.com`、`ws.chatgpt.com`、`api.openai.com` 都命中该分组，公共入口测试返回 HTTP 200。**强制使首选节点失效后的自动改选尚未验收**，不可把此次试点当作零中断保证。
+2026 年 10 月的本地试点已验证：在保留原配置的前提下创建了 `OpenAI-Resilience` 组，启用测试配置后 `chatgpt.com`、`ws.chatgpt.com`、`api.openai.com` 都命中该分组，公共入口测试返回 HTTP 200。另提供 [OpenAI 业务域名补充分流片段](examples/shadowrocket-openai-domain-overlay.fragment.conf)，只预置两个 OpenAI 专属域名；共享 Cloudflare、WorkOS 域名须先验证真实命中再决定是否调整。片段不会自动应用；详细核查见 [分流与恢复审计](research/openai-route-and-failover-audit-20261023.md)。**强制使首选节点失效后的自动改选尚未验收**，不可把此次试点当作零中断保证。
 
 ## 配置与事件记录
 

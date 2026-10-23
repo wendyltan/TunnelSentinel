@@ -40,7 +40,7 @@ Avoid indiscriminate `启用回退` on the global `proxy` policy before understa
 
 ## Acceptance gate
 
-**OPEN**: No live fallback group or OpenAI-specific policy has been installed by this stage. The one required high-impact action is selecting a test copy of the Shadowrocket profile after its rules/candidates have been reviewed. Do not silently alter current traffic routing merely to close a task.
+**PARTIALLY ACCEPTED / LIVE**: The native `OpenAI-Resilience` policy is enabled and the three original OpenAI control domains were validated in the Shadowrocket Test Rules UI on 2026-10-23. **OPEN:** forced-backend-failure recovery, WebSocket longevity, and coverage verification for the complete current official OpenAI host list. Do not silently alter current traffic routing or inject a fault to close this gate. See [the later scoped audit](openai-route-and-failover-audit-20261023.md).
 
 
 ## Local live validation — 2026-10-23

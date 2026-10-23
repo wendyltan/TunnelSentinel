@@ -23,6 +23,11 @@
 - [ ] 长期检查 ChatGPT 客户端、Codex 连接的错误收敛与反复切换风险。
 - [ ] Human visual acceptance of menu recovery state and action.
 
+- [x] Nexitally AI Trace 检测方法核实：网页在当前访问者网络即时执行每域 `/cdn-cgi/trace` 与 GeoIP 查询，不提供每节点历史测试数据接口。
+- [x] 新增独立、低频 AI 多站点检测（8 个公开域名，每约 15 分钟，仅 HTTP 200 + 有效出口 IP 记为公共可达）；不阻断基础心跳，不读取订阅私密信息，结果过期后撤回。
+- [x] 菜单栏新增「AI 分流检测」可读摘要和逐站点结果，保留现有原生 fallback 节点切换权。
+- [ ] **更高级的智能选节点仍未完成**：若服务商未来有明确、可验证的单节点检测数据 API，或者 Shadowrocket 提供可靠的逐节点检测/选路接口，再做动态候选过滤及实机切换验收。不能把当前浏览器公共站点检测误称作逐节点解锁能力。
+
 ## P1 · Operational verification
 
 - [ ] Verify healthy-to-degraded-to-recovered timing with a user-approved controlled outage. Never interrupt active tasks merely for tests.

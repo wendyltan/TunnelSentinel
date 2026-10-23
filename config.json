@@ -22,5 +22,7 @@
   "known_good_max_age_hours": 72,
   "manual_change_grace_seconds": 30,
   "native_fallback_enabled": false,
-  "native_fallback_group": ""
+  "native_fallback_group": "",
+  "ai_matrix_enabled": false,
+  "ai_matrix_interval_seconds": 900
 }

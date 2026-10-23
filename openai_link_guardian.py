@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+from concurrent.futures import ThreadPoolExecutor
 import dataclasses
 from datetime import datetime
 import fcntl
@@ -21,13 +22,14 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Deque, Iterable, Optional
 from urllib.parse import urlencode, urlparse
 
 
 APP_NAME = "OpenAILinkGuardian"
-VERSION = "1.4.7"
+VERSION = "1.5.0"
 DEFAULT_HOME = Path.home() / "Library" / "Application Support" / APP_NAME
 DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 DEFAULT_STATUS = DEFAULT_HOME / "status.json"
@@ -59,6 +61,10 @@ DEFAULTS = {
     # in recent Shadowrocket/macOS builds. Keep tunnel reconnection independent.
     "native_fallback_enabled": False,
     "native_fallback_group": "",
+    # Supplemental public, unauthenticated AI-domain trace checks; never own
+    # node selection and never escalate rate limits/geo lookups to a failure.
+    "ai_matrix_enabled": False,
+    "ai_matrix_interval_seconds": 900,
     "tunnel_recovery_enabled": True,
     "tunnel_event_lookback_seconds": 300,
     "tunnel_reconnect_cooldown_seconds": 60,
@@ -92,6 +98,22 @@ PUBSUB_OPEN_MARKER = "chatgpt_pubsub_transport_opened"
 PUBSUB_OUTAGE_SECONDS = 45
 PUBSUB_FAILURE_REPEAT_SECONDS = 30
 ISSUE_WINDOW_SECONDS = 180
+# Method adapted from the public Nexitally AI-routing test page:
+# https://nxonearth.com/aitest.html
+# The page executes requests in the visitor's own browser; it exposes no
+# provider node-history feed. These are reachability/routing observations,
+# NOT proof of ChatGPT login, prompt completions, or node-specific unlock.
+AI_TRACE_TARGETS = (
+    ("ChatGPT", "chatgpt.com"),
+    ("OpenAI", "openai.com"),
+    ("Sora", "sora.com"),
+    ("Claude", "claude.ai"),
+    ("Claude.com", "claude.com"),
+    ("Grok", "grok.com"),
+    ("Anthropic", "anthropic.com"),
+    ("Perplexity", "www.perplexity.ai"),
+)
+
 ISSUE_LABELS = {
     "cloudflare": "ChatGPT 安全验证",
     "rate_limit": "ChatGPT 请求受限",
@@ -232,7 +254,7 @@ def curl_probe(name: str, url: str, proxy: str, websocket: bool = False) -> Prob
     # calls, no secret URLs and no temporary logging of the trace body.
     egress_ip, egress_colo, egress_country = (
         parse_cloudflare_trace(body)
-        if name.startswith("edge") and http_code == 200 and transport_ok
+        if (name.startswith("edge") or name.startswith("ai-")) and http_code == 200 and transport_ok
         and urlparse(url).path == "/cdn-cgi/trace" else ("", "", "")
     )
     return ProbeResult(
@@ -586,6 +608,11 @@ class Guardian:
         self.edge_outage_started_at: Optional[float] = None
         self.edge_outage_previous_ip = ""
         self.last_public_edge_incident: dict = {}
+        self.ai_matrix_lock = threading.Lock()
+        self.ai_matrix_started_at = 0.0
+        self.ai_matrix_running = False
+        self.ai_matrix_checked_at = 0.0
+        self.ai_matrix_checks: list[dict] = []
         self.healthy_streak_node: Optional[str] = None
         self.healthy_streak_count = 0
         self.learned_good_nodes = read_known_good_nodes(
@@ -604,6 +631,51 @@ class Guardian:
             nodes[0] if nodes else None
         )
         self.current_node_verified = observed_node is not None
+
+    def _ai_matrix_runner(self) -> None:
+        # Only public Cloudflare trace endpoints. Every URL is a fixed code
+        # constant, never a URL from untrusted HTML, subscription or response.
+        proxy = str(self.config["proxy"])
+        def check(site: tuple[str, str]) -> dict:
+            name, domain = site
+            result = curl_probe("ai-" + domain,
+                                "https://" + domain + "/cdn-cgi/trace", proxy)
+            ok = (result.transport_ok and result.http_code == 200
+                  and bool(result.egress_ip))
+            return {
+                "name": name, "domain": domain,
+                "status": "reachable" if ok else "unverified",
+                "http_code": result.http_code,
+                "latency_ms": round(result.duration * 1000),
+                "egress_country": result.egress_country if ok else "",
+                "egress_colo": result.egress_colo if ok else "",
+                "egress_ip": result.egress_ip if ok else "",
+            }
+        try:
+            with ThreadPoolExecutor(max_workers=3) as workers:
+                checks = list(workers.map(check, AI_TRACE_TARGETS))
+            with self.ai_matrix_lock:
+                self.ai_matrix_checks = checks
+                self.ai_matrix_checked_at = time.time()
+        except Exception as exc:
+            self.logger.warning("AI routing supplemental checks failed: %s",
+                                type(exc).__name__)
+        finally:
+            with self.ai_matrix_lock:
+                self.ai_matrix_running = False
+
+    def maybe_begin_ai_matrix(self, network_healthy: bool) -> None:
+        if not self.config.get("ai_matrix_enabled", False) or not network_healthy:
+            return
+        now = time.monotonic()
+        interval = max(300, int(self.config.get("ai_matrix_interval_seconds", 900)))
+        with self.ai_matrix_lock:
+            if self.ai_matrix_running or now - self.ai_matrix_started_at < interval:
+                return
+            self.ai_matrix_started_at = now
+            self.ai_matrix_running = True
+        threading.Thread(target=self._ai_matrix_runner, daemon=True,
+                         name="TunnelSentinel-AIRoutingAudit").start()
 
     def known_good_candidates(self) -> list[str]:
         # Revalidate age at least every 5 minutes while the daemon is running.
@@ -803,7 +875,25 @@ class Guardian:
              if result.transport_ok and result.http_code == 200 and result.egress_ip),
             None,
         )
+        with self.ai_matrix_lock:
+            ai_busy = self.ai_matrix_running
+            ai_age = (time.time() - self.ai_matrix_checked_at
+                      if self.ai_matrix_checked_at else float("inf"))
+            max_age = max(600, int(self.config.get("ai_matrix_interval_seconds", 900)) * 2)
+            ai_valid = (healthy and self.config.get("ai_matrix_enabled", False)
+                        and 0 <= ai_age <= max_age)
+            ai_rows = [row.copy() for row in self.ai_matrix_checks] if ai_valid else []
+            ai_when = (datetime.fromtimestamp(self.ai_matrix_checked_at)
+                       .astimezone().isoformat(timespec="seconds")
+                       if ai_valid else "")
         payload = {
+            "ai_matrix_enabled": bool(self.config.get("ai_matrix_enabled", False)),
+            "ai_matrix_source": "local_public_trace_requests",
+            "ai_matrix_checked_at": ai_when,
+            "ai_matrix_running": ai_busy,
+            "ai_matrix_fresh": bool(ai_valid),
+            "ai_matrix_sites": ai_rows,
+            "ai_matrix_limit": "Public access/routing only; not node unlock or authenticated chat",
             "version": VERSION,
             "pid": os.getpid(),
             "overall_status": (
@@ -963,6 +1053,7 @@ class Guardian:
         results = self.probe_all()
         healthy = self.path_is_healthy(results)
         self.observe_edge_incident(results, healthy)
+        self.maybe_begin_ai_matrix(healthy)
         log_failures = self.log_watcher.read_new_failures()
         if log_failures:
             self.logger.warning("new ChatGPT network log failures=%d", len(log_failures))

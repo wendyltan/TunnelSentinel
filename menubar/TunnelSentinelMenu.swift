@@ -7,6 +7,15 @@ private struct Issue {
     let count: Int
 }
 
+private struct AISiteCheck {
+    let name: String
+    let domain: String
+    let status: String
+    let code: Int
+    let ms: Int
+    let location: String
+}
+
 private struct Snapshot {
     var fresh = false
     var networkHealthy = false
@@ -30,6 +39,10 @@ private struct Snapshot {
     var recoveryReason = ""
     var recoveryRetrySeconds = 0
     var issues: [Issue] = []
+    var aiMatrixFresh = false
+    var aiMatrixRunning = false
+    var aiMatrixCheckedAt = ""
+    var aiMatrixSites: [AISiteCheck] = []
 }
 
 @MainActor
@@ -151,6 +164,23 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             next.issues = records.compactMap {
                 guard let title = $0["title"] as? String else { return nil }
                 return Issue(title: title, count: $0["count"] as? Int ?? 1)
+            }
+        }
+        next.aiMatrixFresh = values["ai_matrix_fresh"] as? Bool ?? false
+        next.aiMatrixRunning = values["ai_matrix_running"] as? Bool ?? false
+        next.aiMatrixCheckedAt = values["ai_matrix_checked_at"] as? String ?? ""
+        if let sites = values["ai_matrix_sites"] as? [[String: Any]] {
+            next.aiMatrixSites = sites.compactMap { item in
+                guard let name = item["name"] as? String,
+                      let domain = item["domain"] as? String else { return nil }
+                let country = item["egress_country"] as? String ?? ""
+                let colo = item["egress_colo"] as? String ?? ""
+                return AISiteCheck(
+                    name: name, domain: domain,
+                    status: item["status"] as? String ?? "unverified",
+                    code: item["http_code"] as? Int ?? 0,
+                    ms: item["latency_ms"] as? Int ?? 0,
+                    location: [country, colo].filter { !$0.isEmpty }.joined(separator: "-"))
             }
         }
         snapshot = next
@@ -454,6 +484,45 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return item
     }
 
+    private var aiMatrixSummary: String {
+        if !snapshot.aiMatrixFresh {
+            return snapshot.aiMatrixRunning ? "AI 分流检测 · 正在检查" : "AI 分流检测 · 待检测"
+        }
+        let ok = snapshot.aiMatrixSites.filter { $0.status == "reachable" }.count
+        return "AI 分流检测 · \(ok)/\(snapshot.aiMatrixSites.count) 可达"
+    }
+
+    @objc private func showAIMatrix() {
+        let dialog = NSAlert()
+        dialog.messageText = "AI 站点分流检测"
+        dialog.alertStyle = .informational
+        dialog.addButton(withTitle: "关闭")
+        if !snapshot.fresh || !snapshot.aiMatrixFresh {
+            dialog.informativeText = """
+                暂无有效的多站点检测结果。
+                后台每约 15 分钟进行一次轻量测试。
+                当前基础健康检查与本测试互不影响。
+                """
+        } else {
+            let rows = snapshot.aiMatrixSites.map { site -> String in
+                let state = site.status == "reachable" ? "可达" : "未确认"
+                let location = site.location.isEmpty ? "—" : site.location
+                let timing = site.status == "reachable" ? " · \(site.ms)ms" : ""
+                return "\(site.name)  \(state) · \(location)\(timing)"
+            }.joined(separator: "\n")
+            dialog.informativeText = """
+                最近检查：\(snapshot.aiMatrixCheckedAt)
+
+                \(rows)
+
+                仅表示当前代理路径的公共网站可达性及出口地理信息。
+                不等于节点支持 ChatGPT 登录、对话或 API。
+                其他 AI 网站的失败不会触发 ChatGPT 切换。
+                """
+        }
+        dialog.runModal()
+    }
+
     private func rebuildMenu() {
         guard let statusItem else { return }
         let fingerprint = [
@@ -467,7 +536,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             snapshot.routeManagement, snapshot.nativeFallbackGroup,
             snapshot.recoveryState, snapshot.recoveryReason,
             String(snapshot.recoveryRetrySeconds),
-            snapshot.issues.map { "\($0.title):\($0.count)" }.joined(separator: "|")
+            snapshot.issues.map { "\($0.title):\($0.count)" }.joined(separator: "|"),
+            aiMatrixSummary, snapshot.aiMatrixCheckedAt,
+            snapshot.aiMatrixSites.map { "\($0.domain):\($0.status):\($0.location)" }.joined(separator: "|")
         ].joined(separator: "::")
         guard fingerprint != lastRenderedState else { return }
         lastRenderedState = fingerprint
@@ -485,6 +556,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         menu.addItem(card)
         menu.addItem(.separator())
         menu.addItem(menuItem("立即检查链路", symbol: "arrow.clockwise", action: #selector(forceProbe)))
+        menu.addItem(menuItem(aiMatrixSummary, symbol: "globe.americas",
+                              action: #selector(showAIMatrix)))
         menu.addItem(menuItem("查看事件日志", symbol: "list.bullet.rectangle", action: #selector(openLog)))
         if recoveryBlocked || !snapshot.networkHealthy {
             menu.addItem(menuItem("打开 Shadowrocket 手动处理", symbol: "network",

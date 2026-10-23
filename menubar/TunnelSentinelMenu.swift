@@ -35,6 +35,12 @@ private struct Snapshot {
     var egressCountry = ""
     var actualBackendName = ""
     var backendVerified = false
+    var backendObservedAt = ""
+    var backendLastLoggedName = ""
+    var backendLastLoggedAt = ""
+    var nativeProxyLogEnabled = false
+    var nativeProxyLogRecent = false
+    var backendLogHistory: [[String: Any]] = []
     var recoveryState = "monitoring"
     var recoveryReason = ""
     var recoveryRetrySeconds = 0
@@ -170,6 +176,17 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         next.egressCountry = values["openai_egress_country"] as? String ?? ""
         next.actualBackendName = values["openai_group_backend_name"] as? String ?? ""
         next.backendVerified = values["openai_group_backend_verified"] as? Bool ?? false
+        next.backendObservedAt = values["openai_group_backend_observed_at"] as? String ?? ""
+        next.nativeProxyLogEnabled = values["native_proxy_log_reader_enabled"] as? Bool ?? false
+        next.nativeProxyLogRecent = values["native_proxy_log_recent"] as? Bool ?? false
+        if let last = values["native_proxy_last_connection"] as? [String: Any],
+           last["source"] as? String == "shadowrocket_native_proxy_log" {
+            next.backendLastLoggedName = last["name"] as? String ?? ""
+            next.backendLastLoggedAt = last["observed_at"] as? String ?? ""
+        }
+        next.backendLogHistory = (values["native_proxy_node_history"] as? [[String: Any]] ?? [])
+            .filter { $0["source"] as? String == "shadowrocket_native_proxy_log" }
+            .suffix(10).map { $0 }
         if let evidence = try? Data(contentsOf: base.appendingPathComponent("group-node-evidence.json")),
            let data = (try? JSONSerialization.jsonObject(with: evidence)) as? [String: Any],
            data["source"] as? String == "human_verified_shadowrocket_ui",
@@ -326,6 +343,20 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return location.isEmpty ? "出口已观测" : location
     }
 
+    private var backendCompactTitle: String {
+        let isRecent = snapshot.fresh && snapshot.backendVerified &&
+            !snapshot.actualBackendName.isEmpty
+        let historicName = !snapshot.backendLastLoggedName.isEmpty
+            ? snapshot.backendLastLoggedName : snapshot.userLastVerifiedNode
+        let name = isRecent ? snapshot.actualBackendName : historicName
+        guard !name.isEmpty else { return shortEgress }
+        let short = String(name
+            .replacingOccurrences(of: "🇺🇸 USA ", with: "")
+            .replacingOccurrences(of: "🇯🇵 ", with: "")
+            .prefix(18))
+        return isRecent ? short : "上次 " + short
+    }
+
     private var globalNode: String {
         if let liveNode, !liveNode.isEmpty { return liveNode }
         if snapshot.fresh && !snapshot.checkedNode.isEmpty {
@@ -463,14 +494,19 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         nodeBox.layer?.cornerRadius = 10
         nodeBox.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         let backendSource = snapshot.backendVerified && !snapshot.actualBackendName.isEmpty
-            ? "Shadowrocket 当前分组节点"
-            : "OpenAI 实际出口 · 最近一次探测（非节点名）"
+            ? "GPT 最近请求节点 · Shadowrocket 原生记录"
+            : "GPT 上次确认节点 · 非实时"
         nodeBox.addSubview(label(backendSource,
                                 font: .systemFont(ofSize: 10, weight: .medium),
                                 color: .secondaryLabelColor,
                                 frame: NSRect(x: 12, y: 84, width: 317, height: 15)))
         let egressTitle = snapshot.backendVerified && !snapshot.actualBackendName.isEmpty
-            ? snapshot.actualBackendName : observedEgress
+            ? snapshot.actualBackendName
+            : (!snapshot.backendLastLoggedName.isEmpty
+                ? snapshot.backendLastLoggedName
+                : (!snapshot.userLastVerifiedNode.isEmpty
+                    ? snapshot.userLastVerifiedNode + "（上次）"
+                    : observedEgress))
         nodeBox.addSubview(label(egressTitle,
                                 font: .systemFont(ofSize: 13.5, weight: .semibold),
                                 color: .labelColor,
@@ -612,6 +648,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             String(snapshot.egressObserved), snapshot.egressIP,
             snapshot.egressCountry, snapshot.egressColo,
             snapshot.actualBackendName, String(snapshot.backendVerified),
+            snapshot.backendObservedAt, snapshot.backendLastLoggedName,
+            snapshot.backendLastLoggedAt, String(snapshot.nativeProxyLogRecent),
+            snapshot.backendLogHistory.map { String(describing: $0) }.joined(separator: "|"),
             snapshot.routeManagement, snapshot.nativeFallbackGroup,
             snapshot.recoveryState, snapshot.recoveryReason,
             String(snapshot.recoveryRetrySeconds),
@@ -630,10 +669,13 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         lastRenderedState = fingerprint
         // Allow macOS to choose dark/light contrast for both glyph and label.
         statusItem.button?.title = snapshot.routeManagement == "native_fallback"
-            ? "\(menuBarStateMarker) \(statusLabel) · 出 \(shortEgress) · 全 \(compactGlobalNode)"
+            ? "\(menuBarStateMarker) \(statusLabel) · GPT \(backendCompactTitle) · 全 \(compactGlobalNode)"
             : "\(menuBarStateMarker) \(statusLabel) · 全 \(compactGlobalNode)"
         statusItem.button?.contentTintColor = nil
-        statusItem.button?.toolTip = "TunnelSentinel · \(statusLabel)\n\(headline)\nOpenAI 实际出口（探测观测）：\(observedEgress)\n全局节点：\(globalNode)\n\(detail)"
+        let selectedDescription = snapshot.fresh && snapshot.backendVerified
+            ? "GPT 最近请求实际节点：\(snapshot.actualBackendName)（\(snapshot.backendObservedAt)）"
+            : "GPT 当前节点尚未核实；上次请求记录或截图：\(snapshot.backendLastLoggedName.isEmpty ? snapshot.userLastVerifiedNode : snapshot.backendLastLoggedName)（\(snapshot.backendLastLoggedAt.isEmpty ? snapshot.userLastVerifiedDate : snapshot.backendLastLoggedAt)）"
+        statusItem.button?.toolTip = "TunnelSentinel · \(statusLabel)\n\(headline)\n\(selectedDescription)\nOpenAI 公共出口：\(observedEgress)\n全局节点：\(globalNode)\n\(detail)"
         statusItem.button?.setAccessibilityLabel("TunnelSentinel，\(statusLabel)，OpenAI 出口 \(shortEgress)，全局节点 \(globalNode)")
         statusItem.button?.setAccessibilityValue("\(headline)；\(detail)")
         let menu = NSMenu()
@@ -739,10 +781,19 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         let group = snapshot.nativeFallbackGroup.isEmpty ? "未配置" : snapshot.nativeFallbackGroup
         let backend: String
         if snapshot.fresh && snapshot.backendVerified && !snapshot.actualBackendName.isEmpty {
-            backend = snapshot.actualBackendName + "（原生证据已核实）"
+            backend = "\(snapshot.actualBackendName)（最近 GPT 请求：\(snapshot.backendObservedAt)，原生记录）"
         } else {
-            backend = "实时节点名：未核实（Shadowrocket 未提供可靠的组内后端读取接口）"
+            backend = "当前节点未核实（近期没有新的 GPT 原生代理请求日志）"
         }
+        let lastNative = snapshot.backendLastLoggedName.isEmpty
+            ? "尚无符合 OpenAI 分组的原生日志"
+            : "\(snapshot.backendLastLoggedName)（\(snapshot.backendLastLoggedAt)，上次实际请求）"
+        let nativeHistory = snapshot.backendLogHistory.suffix(10).map { item -> String in
+            let when = item["observed_at"] as? String ?? "?"
+            let from = item["from_node"] as? String ?? "?"
+            let to = item["to_node"] as? String ?? "?"
+            return "  · \(when)  GPT 请求节点：\(from) → \(to)"
+        }.joined(separator: "\n")
         let lastVerified = snapshot.userLastVerifiedNode.isEmpty
             ? "无人工核实记录"
             : "\(snapshot.userLastVerifiedNode)（\(snapshot.userLastVerifiedDate) 界面截图；仅当时选中）"
@@ -772,7 +823,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             GPT 节点状态与事件
             ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             策略分组：\(group)  ·  原生 fallback
-            当前组内实际节点：\(backend)
+            最近一次 GPT 请求：\(backend)
+            上次原生日志节点：\(lastNative)
             上次人工确认：\(lastVerified)
             上次确认候选：\(candidates)
 
@@ -781,6 +833,10 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             实际出口地区：\(edge)
             出口 IP（技术参考）：\(edgeIP)
             Shadowrocket 全局节点：\(globalNode)
+
+            GPT 原生节点变更记录
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            \(nativeHistory.isEmpty ? "  尚无不同节点的连续请求证据" : nativeHistory)
 
             自然故障留证
             ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -800,10 +856,11 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             · 上次人工确认的节点不等于此刻实际使用的节点。
             · IP/地区只证明当前网络出口，不能反推出机场节点名。
-            · 只有 Shadowrocket 原生代理日志/受支持的运行时节点记录，
-              才能独立核实每次 GPT 请求的具体节点。
-            · 如要继续集成，请在 Shadowrocket「数据 → 代理」
-              查看是否开启日志，再提供一条脱敏的 GPT 请求记录。
+            · Shadowrocket 原生代理日志已集成：节点名来自每条 GPT
+              请求的命中结果，不等于“持续在线选中”的实时状态。
+            · 日志关闭或 10 分钟无新 GPT 连接后不再显示实时节点；
+              上次请求保留时间标识，非 GPT 网站活动绝不采集。
+            · 这是只读诊断，不会替 Shadowrocket 自动换节点。
             """
     }
 

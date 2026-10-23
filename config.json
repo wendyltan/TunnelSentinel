@@ -25,5 +25,8 @@
   "native_fallback_group": "",
   "ai_matrix_enabled": false,
   "ai_matrix_interval_seconds": 900,
-  "endpoint_method_audit_enabled": false
+  "endpoint_method_audit_enabled": false,
+  "native_proxy_log_reader_enabled": false,
+  "native_proxy_log_reader_interval_seconds": 40,
+  "native_proxy_node_recent_seconds": 600
 }

@@ -29,7 +29,7 @@ from urllib.parse import urlencode, urlparse
 
 
 APP_NAME = "OpenAILinkGuardian"
-VERSION = "1.5.2"
+VERSION = "1.5.4"
 DEFAULT_HOME = Path.home() / "Library" / "Application Support" / APP_NAME
 DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 DEFAULT_STATUS = DEFAULT_HOME / "status.json"
@@ -68,6 +68,11 @@ DEFAULTS = {
     # Read-only request-method comparison for the *currently selected* route.
     # Does NOT infer whether Shadowrocket native fallback itself uses HEAD.
     "endpoint_method_audit_enabled": False,
+    # The user explicitly enabled native proxy logging for the requested
+    # ChatGPT node identity feature. Never toggle logging on their behalf.
+    "native_proxy_log_reader_enabled": False,
+    "native_proxy_log_reader_interval_seconds": 40,
+    "native_proxy_node_recent_seconds": 600,
     "tunnel_recovery_enabled": True,
     "tunnel_event_lookback_seconds": 300,
     "tunnel_reconnect_cooldown_seconds": 60,
@@ -627,6 +632,12 @@ class Guardian:
         self.ai_matrix_checked_at = 0.0
         self.ai_matrix_checks: list[dict] = []
         self.endpoint_method_audit: dict = {}
+        self.native_log_lock = threading.Lock()
+        self.native_log_last_run_at = 0.0
+        self.native_log_running = False
+        self.native_log_latest: dict = {}
+        self.native_log_history: list[dict] = []
+        self.native_log_error = ""
         self.healthy_streak_node: Optional[str] = None
         self.healthy_streak_count = 0
         self.learned_good_nodes = read_known_good_nodes(
@@ -638,6 +649,18 @@ class Guardian:
         self.refresh_requested = False
         previous_status = self._load_previous_status()
         self.manual_pause = bool(previous_status.get("manual_pause", False))
+        last_log = previous_status.get("native_proxy_last_connection", {})
+        if isinstance(last_log, dict) and last_log.get("source") == "shadowrocket_native_proxy_log":
+            self.native_log_latest = {
+                k: last_log[k] for k in ("name","host","group","observed_at","epoch","source")
+                if k in last_log
+            }
+        stored_routes = previous_status.get("native_proxy_node_history", [])
+        if isinstance(stored_routes, list):
+            self.native_log_history = [
+                item for item in stored_routes[-10:]
+                if isinstance(item, dict) and item.get("source") == "shadowrocket_native_proxy_log"
+            ]
         stored_changes = previous_status.get("egress_change_history", [])
         if isinstance(stored_changes, list):
             self.egress_changed_at = [
@@ -653,6 +676,88 @@ class Guardian:
             nodes[0] if nodes else None
         )
         self.current_node_verified = observed_node is not None
+
+    def _native_proxy_log_worker(self) -> None:
+        # The guard process NEVER opens the protected Shadowrocket directory.
+        # A short-lived, time-limited child performs only read-only SQL and
+        # emits sanitized per-OpenAI-group node records, no URLs or UA.
+        helper = DEFAULT_HOME / "shadowrocket_native_log_probe.py"
+        error_kind = "reader_unavailable"
+        try:
+            process = subprocess.run(
+                [sys.executable, str(helper), "--group",
+                 str(self.config.get("native_fallback_group", ""))],
+                capture_output=True, text=True, check=False, timeout=2.5,
+            )
+            if process.returncode:
+                error_kind = "reader_exit_" + str(int(process.returncode))
+                raise ValueError("reader child failed")
+            payload = json.loads(process.stdout)
+            if payload.get("source") != "shadowrocket_native_proxy_log":
+                raise ValueError("unexpected source")
+            latest = payload.get("latest")
+            if latest is not None and (
+                not isinstance(latest, dict) or
+                latest.get("group") != self.config.get("native_fallback_group") or
+                latest.get("source") != "shadowrocket_native_proxy_log"
+            ):
+                raise ValueError("unexpected group")
+            with self.native_log_lock:
+                if latest:
+                    old = self.native_log_latest
+                    # A prior recorded request is immutable evidence,
+                    # but not proof of the route selected *right now*.
+                    if (old and latest.get("name") != old.get("name")
+                            and int(latest.get("epoch",0)) > int(old.get("epoch",0))):
+                        self.native_log_history.append({
+                            "observed_at": latest["observed_at"],
+                            "from_node": old["name"],
+                            "to_node": latest["name"],
+                            "source": "shadowrocket_native_proxy_log",
+                            "evidence": "different_nodes_in_observed_GPT_requests",
+                            "is_fallback_switch_confirmed": False,
+                        })
+                        self.native_log_history = self.native_log_history[-10:]
+                        self.logger.info(
+                            "native GPT proxy log observed different nodes in requests"
+                        )
+                    if (not old or int(latest.get("epoch",0)) >= int(old.get("epoch",0))):
+                        self.native_log_latest = latest
+                self.native_log_error = ""
+        except subprocess.TimeoutExpired:
+            with self.native_log_lock:
+                self.native_log_error = "reader_timeout"
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError) as err:
+            # Only a failure *category* is exposed; stderr might contain
+            # private directory or access context, so never persist it.
+            with self.native_log_lock:
+                self.native_log_error = (
+                    error_kind if error_kind != "reader_unavailable"
+                    else "reader_" + type(err).__name__.lower()
+                )
+            # No sensitive stderr or URL is persisted.
+        finally:
+            with self.native_log_lock:
+                self.native_log_running = False
+
+    def maybe_begin_native_proxy_log(self) -> None:
+        if not (self.config.get("native_fallback_enabled", False)
+                and self.config.get("native_proxy_log_reader_enabled", False)
+                and self.config.get("native_fallback_group")):
+            return
+        now = time.monotonic()
+        with self.native_log_lock:
+            if (self.native_log_running or
+                now - self.native_log_last_run_at <
+                    max(30, int(self.config.get("native_proxy_log_reader_interval_seconds",40)))):
+                return
+            self.native_log_running = True
+            self.native_log_last_run_at = now
+        threading.Thread(
+            target=self._native_proxy_log_worker,
+            daemon=True,
+            name="TunnelSentinel-NativeNodeReader",
+        ).start()
 
     def _ai_matrix_runner(self) -> None:
         # Only public Cloudflare trace endpoints. Every URL is a fixed code
@@ -990,7 +1095,28 @@ class Guardian:
             ai_when = (datetime.fromtimestamp(self.ai_matrix_checked_at)
                        .astimezone().isoformat(timespec="seconds")
                        if ai_valid else "")
+        with self.native_log_lock:
+            native = self.native_log_latest.copy()
+            native_events = [e.copy() for e in self.native_log_history[-10:]]
+            native_reader_problem = self.native_log_error
+        try:
+            native_age = time.time() - int(native.get("epoch",0))
+        except (TypeError,ValueError):
+            native_age = float("inf")
+        native_recent = (
+            self.config.get("native_proxy_log_reader_enabled",False)
+            and self.config.get("native_fallback_enabled",False)
+            and healthy and proxy_available
+            and 0 <= native_age <= max(60,int(self.config.get("native_proxy_node_recent_seconds",600)))
+            and native.get("group") == self.config.get("native_fallback_group")
+        )
         payload = {
+            "native_proxy_log_reader_enabled": bool(self.config.get("native_proxy_log_reader_enabled",False)),
+            "native_proxy_log_recent": bool(native_recent),
+            "native_proxy_log_read_status": native_reader_problem or "ok",
+            "native_proxy_last_connection": native,
+            "native_proxy_node_history": native_events,
+            "native_proxy_node_scope": "per-request name from native log, not continuous backend state",
             "ai_matrix_enabled": bool(self.config.get("ai_matrix_enabled", False)),
             "ai_matrix_source": "local_public_trace_requests",
             "ai_matrix_checked_at": ai_when,
@@ -1017,8 +1143,10 @@ class Guardian:
             "openai_egress_colo": observed.egress_colo if observed and healthy else "",
             "openai_egress_country": observed.egress_country if observed and healthy else "",
             "openai_egress_source": "chatgpt_public_edge" if observed and healthy else "unverified",
-            "openai_group_backend_name": "",
-            "openai_group_backend_verified": False,
+            "openai_group_backend_name": str(native.get("name","")) if native_recent else "",
+            "openai_group_backend_verified": bool(native_recent),
+            "openai_group_backend_observed_at": native.get("observed_at","") if native else "",
+            "openai_group_backend_source": "shadowrocket_native_proxy_log" if native_recent else "unverified",
             "current_node_scope": ("shadowrocket_global_selection" if self.config.get("native_fallback_enabled", False)
                                    else "shadowrocket_selected_server"),
             "recovery_state": self.recovery_state,
@@ -1162,6 +1290,7 @@ class Guardian:
         healthy = self.path_is_healthy(results)
         self.observe_edge_incident(results, healthy)
         self.maybe_begin_ai_matrix(healthy)
+        self.maybe_begin_native_proxy_log()
         log_failures = self.log_watcher.read_new_failures()
         if log_failures:
             self.logger.warning("new ChatGPT network log failures=%d", len(log_failures))

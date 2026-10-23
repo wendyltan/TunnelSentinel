@@ -69,3 +69,21 @@ Shadowrocket 手册明确说**其“CONNECT”连通性测试会对指定测试 
 - Nexitally AI 自助测试：https://nxonearth.com/aitest.html
 - macOS Shadowrocket 编辑器 API 相关实测（**不建议投入生产**）：https://github.com/daymade/claude-code-skills/blob/main/tunnel-doctor/references/proxy_conflict_reference.md
 - 只封装 URL Schemes 的第三方 Node 包：https://www.npmjs.com/package/shadowrocket-node-switch （缺少节点清单/健康状态读取能力，无法解决本机旧 URL 已失效的问题）
+
+
+## 2026-10-23 18:40 CST — Shadowrocket macOS settings cross-check
+
+**CONFIRMED via an actual screenshot of Shadowrocket 2.2.92 Settings:** “设置 → 延迟测试方法” currently displays **TCP**, not CONNECT. In the active Config list, `sr_cnip-copy.conf` is checked; its details page still displays 393 rules and one proxy group. This UI inspection was read-only: no manual node test was run, and routing was untouched.
+
+This significantly narrows the earlier HEAD interpretation:
+
+- The vendor/community manual explicitly documents `CONNECT` as a manual latency method sending `HTTP HEAD`; the active **global latency test mode is TCP**. Neither one proves that the automatic `fallback` policy background worker uses TCP, CONNECT/HEAD, GET or any other method.
+- The same manual states **manual “代理分组 → 测试” latency results do not determine the background automatic policy's independent test results**. Therefore even a successful manual test is insufficient evidence of the background method or its actual failover decision.
+- Previously observed `GET /cdn-cgi/trace = 200` and `HEAD = 403 (cf-mitigated: challenge)` still establish a test-method discrepancy on the currently routed egress. Classify it as a possible diagnostic false-negative **only if the corresponding probe truly uses HEAD**, not a proven active fallback malfunction.
+- Unchanged backend status: TunnelSentinel 1.5.1 healthy, native fallback owned by Shadowrocket. Last observation `overall_status=attention` reflects business-level warning, not link unavailable.
+- Shadowrocket's UI remained navigable for read-only settings and config page, but entering the group view again triggered macOS accessibility refusal `-25211`. Stopped and restored foreground to ChatGPT, rather than bypassing TCC or changing the active tunnel.
+
+**Safer next experiment, only when the UI is available:** inspect the “测试并选择最快服务器” global setting and the active group's fallback interval/URL/members; document current values first. Do not start a group-wide manual test until it is established this action won't reorder or select nodes unexpectedly. Even if run, mark the test `manual latency`, distinct from `background automatic test`. To conclusively establish the background method, prefer the app vendor's documented statement or a supported read-only diagnostic output; no supported backend per-node method API has yet been established. Preserve the user's explicit decision not to force outages for testing.
+
+
+**Additional 2.2.92 caveat:** the 2026 release notes describe a new independent per-group Ping-sorting option and a fix preventing stale connectivity tests from unexpectedly resetting VPN state. The app setting screenshot only establishes global test **TCP**, not whether the group's own background URL check uses TCP or an HTTP method. Before a manual group test, inspect both “测试并选择最快服务器” and “根据 Ping 排序” without toggling anything. Do not treat mere screenshot latency numbers or public GET success as proof of node eligibility or fallback priority. Sources: https://telegram.me/s/shadowrocketnews?before=1641 , https://github.com/LOWERTOP/Shadowrocket/wiki .

@@ -28,7 +28,8 @@
 - [x] 菜单栏新增「AI 分流检测」可读摘要和逐站点结果，保留现有原生 fallback 节点切换权。
 - [x] **逐节点 ChatGPT 智能选择可行性研究**：确认原生 `fallback` 可逐候选检查单 URL；当前 Mac 实测 `GET /cdn-cgi/trace=200`、`HEAD /cdn-cgi/trace=403 (Cloudflare challenge)`，而 `HEAD /robots.txt=200`；自动分组是否同用 HEAD 尚待原生测试证实。见 `research/chatgpt-node-eligibility-20261023.md`。
 - [x] v1.5.1 增加可选、低频的 **当前路径** GET/HEAD Cloudflare 差异检测与菜单提示，默认关闭，独立于节点轮换；全量回归修复旧用例直接读取 macOS 受保护节点状态的权限问题。
-- [ ] **新 P0 — 核实原生 fallback 的 HTTP 测试方式 / 降低假失效风险**。在隔离、可回退条件下用 Shadowrocket 原生分组测试确认 HEAD/GET 区别和四候选结果；测试结果未验证前保持活动配置不动。
+- [ ] **新 P0 — 核实原生 fallback 的实际后台测试方式 / 降低假失效风险**：实机 Shadowrocket 2.2.92 “延迟测试方法”目前是 **TCP**（不是 CONNECT/HEAD），手动点“代理分组 → 测试”的结果和自动分组后台测试彼此独立。不能再以手动测试结果推断后台请求方法；需应用提供可信后台测试证据或厂商确认后，再考虑调整活动测试 URL。当前路由保持原样。
+- [ ] 下一次安全 GUI 验收：先只读核对“测试并选择最快服务器”及“根据 Ping 排序”是否启用、`OpenAI-Resilience` 组参数及节点，不点“测试”按钮、不启用别的配置。远程 GUI 点击出现 `-25211` 时让用户操作，不绕过辅助权限。
 - [ ] **更高级的智能选节点仍未完成**：只有拿到可信的逐节点后台健康与节点标识，才可能把客户端真实业务错误归属到某一候选；先复用原生组测试，不依赖 Nexitally 页面来推断每个节点的解锁能力。不支持的公开 API 不得编造或用第二套代理内核替代。
 
 ## P1 · Operational verification

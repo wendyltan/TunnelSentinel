@@ -65,7 +65,7 @@ TunnelSentinel 内置参考 [Nexitally AI 分流测试](https://nxonearth.com/ai
 
 **限制：** 上述网页并没有提供带节点名称、检测时间和判定结果的可用历史接口；它在访问者浏览器中即时运行检测。本项目实现相同思路的本机观测，**不是抓取供应商的实时节点解锁名单**。未经真实节点验证不展示“节点 ChatGPT 已解锁”的承诺。
 
-**节点适配研究：** 目前保留 Shadowrocket 原生 `fallback` 做唯一选路，支持单 URL 的逐候选自动健康测试。研究阶段发现，当前出口对 `/cdn-cgi/trace` 的 `GET` 返回 200，但 `HEAD` 返回 Cloudflare 403；如果原生组测试也使用 HEAD，可能出现误判。具体边界、可复现对照与下一项安全验证见 [ChatGPT 节点健康资格研究](research/chatgpt-node-eligibility-20261023.md)。在原生组测试方式确认前不擅自更换活动检测 URL。
+**节点适配研究：** 目前保留 Shadowrocket 原生 `fallback` 做唯一选路，支持单 URL 的逐候选自动健康测试。研究阶段发现，当前出口对 `/cdn-cgi/trace` 的 `GET` 返回 200，但 `HEAD` 返回 Cloudflare 403；如果原生组测试也使用 HEAD，可能出现误判。具体边界、可复现对照与下一项安全验证见 [ChatGPT 节点健康资格研究](research/chatgpt-node-eligibility-20261023.md)。在原生组测试方式确认前不擅自更换活动检测 URL。 Mac 版 2.2.92 实机核对：当前手动延迟测试方式是 **TCP**；手动“代理分组 → 测试”的结果不代表后台自动测试，因此目前还不能断言 `fallback` 正在用 HEAD 或因此误判。
 
 TunnelSentinel 还提供**可选的 HEAD/GET 方法差异诊断**：开启 `endpoint_method_audit_enabled` 后，约每 15 分钟随 AI 分流检测额外进行一次当前出口的 HEAD 测试；遇到 GET 200、HEAD Cloudflare challenge 时，菜单详情明确提示“可能存在健康测试误判”。此功能默认关闭，不参与节点切换，不读取订阅/登录信息，也不能证明 Shadowrocket 原生分组后台一定使用 HEAD。
 

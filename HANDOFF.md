@@ -170,3 +170,17 @@ Always re-check `git status -sb`, HEAD, status.json and running LaunchAgents bef
 - Deployed guardian v1.5.1 and signed menu v1.5.1; **only TunnelSentinel services restarted**. Shadowrocket PID 5940 continued running without restart, existing ChatGPT public GET trace HTTP 200 (~0.59 s) after deployment; menu shows healthy status.
 - Live async AI matrix completed **8 sites**, with new audit output `get_code=200`, `head_code=403`, `head_cloudflare_challenge=true`, `result=possible_head_false_negative`, `scope=current_route_only_not_native_fallback_proof`; no recent guardian errors, route owner still `native_fallback`. This is evidence of request-method difference on the **current route**, **NOT** proof of method used by Shadowrocket's native per-node fallback.
 - User-approved network/disruption behavior unchanged: do NOT manipulate fallback URL or deliberately fail upstream; real native per-node test-method confirmation remains the next human-assisted stage. Do not claim full smart node classification. The menu AI matrix details now explains the method discrepancy.
+
+
+## 2026-10-23 18:34–18:43 CST — P0 live UI review & method gate
+
+- Current worktree initially clean on `feature/tunnelsentinel-health-dashboard-20261022`, HEAD `f18473d`. Guardian v1.5.1 active, native `OpenAI-Resilience`, `healthy=true`, Mac app/PacketTunnel running since previous day. No configuration or service restart authorized/performed this turn.
+- Reviewed authoritative Shadowrocket documentation: CONNECT manual latency measurement sends HTTP HEAD, but **manual group test results are independent of automatic group testing**, so the previously proposed UI manual test is NOT proof of automatic fallback protocol. See https://github.com/LOWERTOP/Shadowrocket/wiki .
+- Screenshot of Mac app version **2.2.92** `Settings` confirms **延迟测试方法 = TCP**, not CONNECT. Screenshot of `Config` confirms active `sr_cnip-copy.conf` checked. Screenshot of active copy's details confirms exactly **393 rules + 1 代理分组**. UI navigation was read-only, did not click the node test, and did not change any settings.
+- Attempt to open the group details via GUI hit the familiar `osascript` assistive-access denial `-25211`; stopped further attempts and restored original foreground ChatGPT. No bypass or group database editing. Background PacketTunnel unaffected.
+- Read-only app binary string inspection and filtered Unified Logs did **not** provide an authenticated/current background fallback request method; this remains **NOT YET VERIFIED**. Do not interpret static `HEAD` strings or curl behavior as proof.
+- Next user-action gate if necessary: in Shadowrocket active Config `sr_cnip-copy.conf` details → 代理分组 → `OpenAI-Resilience`, inspect settings and possible manual-test-and-auto-select toggle. Do not click “测试” without first establishing its impact. Even manual tests cannot prove background's method; reliable vendor-specific background telemetry/documentation is necessary for that claim.
+- Tool README, docs and TODO updated only. Runtime version remains 1.5.1, no new code feature warranted until credible method/health signal can be obtained.
+
+
+- Supplementary 2.2.92 release notes: `feature(group): 独立 Ping 延迟自动排序选项`; `fix(vpn): 防止过期连通性测试意外重置 VPN 状态`. Neither proves fallback's HTTP method. Read-only GUI review must note both the manual-test auto-select toggle and Ping sort, and leave them unchanged. No vendor-supported read-only per-node background method API found after targeted search, public unified-log scan and binary-string scan.

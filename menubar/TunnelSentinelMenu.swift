@@ -64,6 +64,33 @@ private struct Snapshot {
     var lastEdgeOutage: [String: Any] = [:]
 }
 
+// NSMenuItem custom views are created before they inherit the menu's effective
+// light/dark appearance. Resolve semantic NSColors while drawing, not when
+// constructing a CALayer's fixed CGColor; otherwise a dark card can retain
+// dark text after attaching to a light system menu (and vice versa).
+private final class AppearanceFillView: NSView {
+    private let fillColor: NSColor
+    private let cornerRadius: CGFloat
+
+    init(frame: NSRect, color: NSColor, cornerRadius: CGFloat = 0) {
+        self.fillColor = color
+        self.cornerRadius = cornerRadius
+        super.init(frame: frame)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        fillColor.setFill()
+        if cornerRadius > 0 {
+            NSBezierPath(roundedRect: bounds, xRadius: cornerRadius, yRadius: cornerRadius).fill()
+        } else {
+            bounds.fill()
+        }
+    }
+}
+
 @MainActor
 final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     private let guardianLabel = "com.wuwendi.openai-link-guardian"
@@ -456,17 +483,14 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     }
 
     private func divider(_ y: CGFloat, in view: NSView) {
-        let line = NSView(frame: NSRect(x: 20, y: y, width: 336, height: 1))
-        line.wantsLayer = true
-        line.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
+        let line = AppearanceFillView(frame: NSRect(x: 20, y: y, width: 336, height: 1),
+                                      color: .separatorColor.withAlphaComponent(0.5))
         view.addSubview(line)
     }
 
     private func badge(_ text: String, color: NSColor, frame: NSRect) -> NSView {
-        let bg = NSView(frame: frame)
-        bg.wantsLayer = true
-        bg.layer?.cornerRadius = 9
-        bg.layer?.backgroundColor = color.withAlphaComponent(0.13).cgColor
+        let bg = AppearanceFillView(frame: frame,
+                                    color: color.withAlphaComponent(0.13), cornerRadius: 9)
         bg.addSubview(label(text, font: .systemFont(ofSize: 11, weight: .semibold),
                             color: color, frame: NSRect(x: 9, y: 1, width: frame.width-18, height: 19),
                             alignment: .center))
@@ -475,9 +499,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
 
     private func menuCard() -> NSView {
         let w: CGFloat = 376
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: 326))
-        v.wantsLayer = true
-        v.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        let v = AppearanceFillView(frame: NSRect(x: 0, y: 0, width: w, height: 326),
+                                   color: .windowBackgroundColor)
         v.addSubview(label("T U N N E L   S E N T I N E L",
                            font: .systemFont(ofSize: 10, weight: .bold),
                            color: .tertiaryLabelColor,
@@ -489,10 +512,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         v.addSubview(label(detail, font: .systemFont(ofSize: 11.5),
                            color: .secondaryLabelColor, frame: NSRect(x: 20, y: 230, width: 337, height: 19)))
 
-        let nodeBox = NSView(frame: NSRect(x: 18, y: 114, width: 340, height: 106))
-        nodeBox.wantsLayer = true
-        nodeBox.layer?.cornerRadius = 10
-        nodeBox.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        let nodeBox = AppearanceFillView(frame: NSRect(x: 18, y: 114, width: 340, height: 106),
+                                         color: .controlBackgroundColor, cornerRadius: 10)
         let backendSource = snapshot.backendVerified && !snapshot.actualBackendName.isEmpty
             ? "GPT 最近请求节点 · Shadowrocket 原生记录"
             : "GPT 上次确认节点 · 非实时"

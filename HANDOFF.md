@@ -1,6 +1,13 @@
 # TunnelSentinel — Handoff
 
-## Current repository checkpoint · 2026-10-24 (Asia/Shanghai)
+## Current UI repair · 2026-10-24 10:47 CST
+
+- User reported a near-black upper custom menu card with dark unreadable text while macOS native menu commands beneath were correctly light. Actual system-menu screenshot reproduced the problem. Root cause: `menuCard()` and child surfaces converted semantic `NSColor` to static `CGColor` in unattached `NSMenuItem.view`, while native menu labels followed the effective appearance.
+- Replaced static layer backgrounds for the custom card, node box, badge, and separators with `AppearanceFillView`, resolving semantic fills inside `draw(_:)` under the view's effective appearance. No networking, routing, guardian or status semantics changed; README updated.
+- SOURCE: Swift AppKit optimized compile PASS; Python regressions 64/64 PASS; `git diff --check` PASS. LIVE: signed `install-menubar.sh` succeeded; before/after screenshots show light card and legible text; LaunchAgent menu now PID 47607, Guardian unchanged PID 54736. Menu rollback is `~/Library/Application Support/OpenAILinkGuardian/backups/branding-20261024-104649/prior-TunnelSentinel.app`. macOS dark-mode live visual acceptance **NOT RUN**; do not state both modes visually passed.
+- Native Shadowrocket `fallback`, subscriptions, ChatGPT and background Guardian untouched. Existing protected-log permission gate remains. Update Git commit/remote tracking status from actual `git log/status`, and do not push without separately requested authorization.
+
+## Previous repository checkpoint · 2026-10-24 (Asia/Shanghai)
 
 - Canonical repository: `/Volumes/ExtSSD/Tools/TunnelSentinel`; branch `main` after a fast-forward from `feature/tunnelsentinel-health-dashboard-20261022`, which has been deleted locally. Latest README change was `ae1cc83` (GPT node-event view and privacy/recency limits). Historical named tags remain intact; local `main` was ahead of `origin/main` by 25 commits immediately after consolidation. No remote push.
 - Verified on the feature tip immediately before consolidation: 64 Python tests **PASS**, signed-app-independent Swift source compile **PASS**, `git diff --check` **PASS**. Subsequent changes were documentation only. Runtime reinstall/restart and human visual acceptance were **NOT RUN** in this consolidation task.

@@ -1,6 +1,13 @@
 # TunnelSentinel — Handoff
 
-## Latest verified update · 2026-10-23 15:27 CST
+## Current repository checkpoint · 2026-10-24 (Asia/Shanghai)
+
+- Canonical repository: `/Volumes/ExtSSD/Tools/TunnelSentinel`; branch `main` after a fast-forward from `feature/tunnelsentinel-health-dashboard-20261022`, which has been deleted locally. Latest README change was `ae1cc83` (GPT node-event view and privacy/recency limits). Historical named tags remain intact; local `main` was ahead of `origin/main` by 25 commits immediately after consolidation. No remote push.
+- Verified on the feature tip immediately before consolidation: 64 Python tests **PASS**, signed-app-independent Swift source compile **PASS**, `git diff --check` **PASS**. Subsequent changes were documentation only. Runtime reinstall/restart and human visual acceptance were **NOT RUN** in this consolidation task.
+- Last independently verified installed runtime was v1.5.4 on 2026-10-23; recheck live status before changing the running service. Native Shadowrocket log reader remains opt-in and was disabled due to App Data permission blocking; historical GPT node evidence must not be presented as live. Do not touch Shadowrocket, ChatGPT or authentication data during ordinary repository cleanup.
+- Continue from `PROJECT_TODO.md` and this file's newer 2026-10-23 entries for unresolved routing/method and privacy gates; earlier branch/version snapshots below are historical, not current instructions.
+
+## Historical verified update · 2026-10-23 15:27 CST
 
 - User requested continued progress on two open risks: complete OpenAI desktop/auth/WebSocket domain routing and actual native fallback switching verification. Existing live Shadowrocket policy remains untouched, because forcing a node failure during active work was not previously approved and macOS restricts reading the protected Shadowrocket Group Container. Attempts to enumerate the protected container hung; both inspection processes were terminated (no config changes).
 - Confirmed blackmatrix7 OpenAI.list covers `*.openai.com`, `*.chatgpt.com`, `*.oaistatic.com` but lacks OpenAI-specific `*.oaistatsig.com` and `*.openaimerge.com` and several shared Cloudflare/WorkOS domains. Created the **inactive** exact-domain overlay `examples/shadowrocket-openai-domain-overlay.fragment.conf` with only those two narrow suffix rules enabled and shared domains commented; `research/openai-route-and-failover-audit-20261023.md` has a verification matrix and Shadowrocket `测试规则` checklist. Actual active routing for the new hosts **still unverified**. No Shadowrocket rules, subscriptions or GUI selections changed.
@@ -17,7 +24,7 @@
 - **Next safe investigation:** Shadowrocket native **测试规则** against official desktop/auth/Cloudflare challenge/WebSocket domains. Compare routing and log times when the next session-list failure occurs. Do not treat an anonymous TLS/403 response or one public HTTP 200 as definitive. The real failover fault-injection gate remains open and needs separate user permission.
 
 **Historical snapshot (below):** 2026-10-22 ~22:10 CST · Mac mini · `/Volumes/ExtSSD/tools/TunnelSentinel`.
-Always re-check `git status -sb`, HEAD, status.json and running LaunchAgents before acting. Current branch: `feature/tunnelsentinel-health-dashboard-20261022`.
+Always re-check `git status -sb`, HEAD, status.json and running LaunchAgents before acting. Branch **at that historical snapshot**: `feature/tunnelsentinel-health-dashboard-20261022` (since merged to `main` and deleted locally on 2026-10-24).
 
 ## Present capabilities and real acceptance
 

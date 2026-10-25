@@ -232,3 +232,9 @@ swiftc -parse-as-library -O -framework AppKit \
 <sub>本地优先 · 适度恢复 · 不以漂亮的「正常」掩盖真实故障</sub>
 
 </div>
+
+### Codex 故障自动切换（待 macOS 授权的受控预备版）
+
+针对 Codex `broken pipe`、WebSocket 握手失败等流式业务故障，现有 `fallback` 虽周期检查 4 个节点，却可能因公共 URL 返回 200 持续选择业务不稳定的 Seattle 05。已增加独立的 `TunnelSentinelRouteController.app` 和 `com.wuwendi.tunnelsentinel-autofailover`：从最近 210 秒 Codex 原生日志识别至少 3 次故障后，**仅修改 `OpenAI-Resilience` 的候选筛选规则**，逐步排除可能异常的节点，保留 Shadowrocket 原生回退和其他候选，不更改全局节点。
+
+安全措施：10 分钟冷却、每日最多 3 次前进操作；旧规则/组名校验、提交后重新读取、无法验证时停止升级、基础入口失效时尝试一次回退、后台并发锁。**功能目前已安装但未启用**：`codex_auto_failover_enabled=false`，因为 macOS 不信任专用后台应用执行辅助操作；交互式工具权限不能代表后台进程权限，尚未完成真实切换验收。需要在系统设置的**隐私与安全性 → 辅助功能**中为 `~/Applications/TunnelSentinelRouteController.app` 授权，再进行只读测试，之后才可启用。不要修改 TCC 数据库、重置系统网络或开放全磁盘访问来绕过该限制。

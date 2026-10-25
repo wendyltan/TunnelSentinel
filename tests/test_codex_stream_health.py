@@ -41,6 +41,7 @@ class CodexStreamTests(unittest.TestCase):
             out=health.scan(p,now)
             self.assertEqual(out["counts"],{"broken_pipe":1,"websocket_handshake":1,"connection_reset":1})
             self.assertEqual(out["last_at"],now-5)
+            self.assertEqual(out["recent_counts"],out["counts"])
             self.assertNotIn("SECRET_PROMPT",json.dumps(out))
             self.assertNotIn("SECRET_KEY",json.dumps(out))
             self.assertNotIn("account sensitive",json.dumps(out))

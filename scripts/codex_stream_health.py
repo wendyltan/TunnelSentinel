@@ -7,12 +7,14 @@ import time
 
 DB = Path.home() / ".codex/logs_2.sqlite"
 WINDOW = 1800
+FAILOVER_WINDOW = 210
 TARGETS = {"codex_core::responses_retry", "codex_api::endpoint::responses_websocket"}
 
 def scan(path=DB, now=None):
     now = time.time() if now is None else now
     counts = {"broken_pipe":0,"websocket_handshake":0,"connection_reset":0}
     newest = 0
+    recent_counts = dict.fromkeys(counts, 0)
     con = None
     try:
         con = sqlite3.connect("file:"+str(path)+"?mode=ro",uri=True,timeout=0.2)
@@ -36,12 +38,15 @@ def scan(path=DB, now=None):
             if kind:
                 counts[kind] += 1
                 newest = max(newest, ts)
+                if 0 <= now-ts <= FAILOVER_WINDOW:
+                    recent_counts[kind] += 1
     except (sqlite3.Error, OSError):
-        return {"source":"codex_read_only_sqlite","state":"unavailable","counts":counts,"last_at":0}
+        return {"source":"codex_read_only_sqlite","state":"unavailable","counts":counts,
+                "recent_counts":recent_counts,"last_at":0}
     finally:
         if con is not None:con.close()
     return {"source":"codex_read_only_sqlite","state":"ok","counts":counts,
-            "last_at":newest,"scan_at":int(now)}
+            "recent_counts":recent_counts, "last_at":newest,"scan_at":int(now)}
 
 
 if __name__ == "__main__":

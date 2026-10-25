@@ -50,3 +50,14 @@
 - [ ] Observe repeated events across one day; no unnecessary restarts, no duplicate node selection storms, no accidental stale data reported as fresh.
 
 Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep README public-facing rather than as a temporary checklist.
+
+### 2026-10-25 业务流中断触发自动故障转移（进行中）
+- [x] 已确认实际可编辑控制面：Shadowrocket 原生 `OpenAI-Resilience` 分组的候选 regex，而非无效的全局节点按钮
+- [x] 实现独立 210 秒内 3 次 Codex 错误触发、重复去重、10 分钟冷却、每日上限、阶段闭锁及网络失效单次回退
+- [x] 原生 macOS 有界控制器、组名/原 regex 校验、保存后重读校验，独立签名应用安装
+- [x] 部署 45 秒 LaunchAgent，开关默认 OFF，保持现有 Shadowrocket 和 Codex 正常工作
+- [ ] **P0 人工一次性授权**：macOS 隐私与安全性 → 辅助功能 → 允许 TunnelSentinel Route Controller；验证独立签名 App 作为后台进程可完成有限 8–12 秒的只读 UI 探测，且不再出现剪贴板/TCC 等待
+- [ ] P0 授权成功后开启 `codex_auto_failover_enabled`，仅在自然业务故障发生时启动分组级候选排除；对比原生 PacketTunnel group tester 与 Codex 流式恢复结果
+- [ ] P1 从原生可信状态获取自动切换后的 backend 验证，确认后才允许进一步候选排除；若不得已回滚，优先保障基础链接并报告不可验证状态
+
+- [x] 2026-10-25 后台权限分离实测：交互式签名 App 权限检查成功；同一 App 从 GUI LaunchAgent 启动时返回 `ACCESSIBILITY=required EVENT_CONTROL=required`。支持无 UI 的 `--check-permissions`。

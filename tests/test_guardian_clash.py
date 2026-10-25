@@ -17,6 +17,14 @@ class GuardianClashTests(unittest.TestCase):
         with mock.patch.object(guardian,'current_shadowrocket_node',return_value=None):
             return guardian.Guardian(config,logging.getLogger('clash-test'),Path(tmp)/'status.json')
 
+    def test_auto_backend_init_never_reads_protected_shadowrocket_preferences(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg=dict(guardian.DEFAULTS)
+            cfg.update(proxy_backend_auto_detect_enabled=True)
+            with mock.patch.object(guardian,'current_shadowrocket_node',side_effect=AssertionError('private preference read')):
+                obj=guardian.Guardian(cfg,logging.getLogger('privacy-test'),Path(tmp)/'status.json')
+            self.assertFalse(obj.current_node_verified)
+
     def test_detected_clash_never_performs_shadowrocket_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:
             obj=self.service(tmp);(Path(tmp)/'clash_observer.py').touch()

@@ -262,3 +262,5 @@ swiftc -parse-as-library -O -framework AppKit \
 - 后续真实故障转移门槛：在 Clash 配置非活动副本中建立 GPT 专用组并验证规则覆盖、候选过滤及 TUN/系统代理兼容；根据 Codex 错误、候选近期健康与节点冷却排序，验证实际连接恢复，具备 readback/rollback 后，才能单独启用真实切换。必须先经过安全验收，不因本版本 `模拟中` 而自动执行。
 
 **已完成离线分组结构实验：** `research/clash-openai-offline-lab.yaml` 使用两条虚构的回环代理节点建立 `OpenAI-Recovery-Lab` fallback 专用组，当前 Clash Verge 内置 Mihomo `-t` 配置校验通过；没有启用，不包含订阅 URL 或真实节点凭据。将来实装前仍需验证完整域名覆盖、候选健康、规则互不影响、可回退切换及业务流式恢复。
+
+**权限边界：** 在自动代理识别模式下，Guardian 启动时不读取 Shadowrocket 受保护的 App Group 偏好。Clash 使用现有用户权限内的 Unix Socket 和系统代理状态，原则上无需为 Python 授予额外“访问其他 App 数据”权限。如出现此前残留的 macOS 授权弹窗，可以拒绝；不影响 Clash 的只读监控。此前的请求不代表本版本需要该权限。

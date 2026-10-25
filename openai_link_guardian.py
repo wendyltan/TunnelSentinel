@@ -680,7 +680,11 @@ class Guardian:
             ]
         nodes = list(config.get("nodes", []))
         previous_node = previous_status.get("current_node")
-        observed_node = current_shadowrocket_node()
+        # Auto-backend sessions cannot assume Shadowrocket owns this Mac.
+        # Its protected App Group preference is only read after the runtime
+        # selector has explicitly confirmed a Shadowrocket proxy owner.
+        observed_node = (None if config.get("proxy_backend_auto_detect_enabled",False)
+                         else current_shadowrocket_node())
         self.current_node = observed_node or previous_node or config.get("initial_node") or (
             nodes[0] if nodes else None
         )

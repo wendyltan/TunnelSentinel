@@ -61,6 +61,7 @@ DEFAULTS = {
     # in recent Shadowrocket/macOS builds. Keep tunnel reconnection independent.
     "native_fallback_enabled": False,
     "native_fallback_group": "",
+    "proxy_backend_auto_detect_enabled": False,
     # Supplemental public, unauthenticated AI-domain trace checks; never own
     # node selection and never escalate rate limits/geo lookups to a failure.
     "ai_matrix_enabled": False,
@@ -601,6 +602,9 @@ class LogWatcher:
 class Guardian:
     def __init__(self, config: dict, logger: logging.Logger, status_path: Path):
         self.config = config
+        self.shadowrocket_proxy = str(config.get("proxy", ""))
+        self.active_backend = "shadowrocket"
+        self.clash_observation: dict = {}
         self.logger = logger
         self.status_path = status_path
         self.log_watcher = LogWatcher(CODEX_LOG_ROOT)
@@ -775,7 +779,8 @@ class Guardian:
                 self.native_log_running = False
 
     def maybe_begin_native_proxy_log(self) -> None:
-        if not (self.config.get("native_fallback_enabled", False)
+        if not (self.active_backend != "clash"
+                and self.config.get("native_fallback_enabled", False)
                 and self.config.get("native_proxy_log_reader_enabled", False)
                 and self.config.get("native_fallback_group")):
             return
@@ -1158,7 +1163,32 @@ class Guardian:
             and 0 <= native_age <= max(60,int(self.config.get("native_proxy_node_recent_seconds",600)))
             and native.get("group") == self.config.get("native_fallback_group")
         )
+        clash_active = self.active_backend == "clash"
+        clash = self.clash_observation if clash_active else {}
+        clash_node = str(clash.get("active_request_node", "")) if clash_active else ""
+        clash_request_verified = bool(clash_node and int(clash.get("active_gpt_connections",0)) > 0
+                                      and clash.get("api_healthy") is True)
+        clash_recent_errors = stream_info.get("recent_counts") or {}
+        clash_error_score = sum(int(clash_recent_errors.get(k,0)) for k in
+                                ("broken_pipe","websocket_handshake","connection_reset"))
+        clash_plan = {
+            "mode":"offline_simulation_no_write",
+            "would_trigger": bool(clash_active and clash_error_score >= 3),
+            "eligible_candidates": int(clash.get("eligible_count",0)) if clash_active else 0,
+            "candidate_scope": "shared_AI_to_Proxies",
+            "blocked_reason":"dedicated_openai_group_required_before_switch",
+            "will_change_routes": False,
+        } if clash_active else {}
         payload = {
+            "clash_failover_plan": clash_plan,
+            "proxy_client": "clash" if clash_active else "shadowrocket",
+            "clash_observation": {k:clash.get(k) for k in
+                ("source","observed_at","active","api_healthy","mode","tun_enabled",
+                 "ai_group","ai_group_type","ai_selection","child_group_type",
+                 "selected_node","active_request_node","active_request_chain",
+                 "active_gpt_connections","candidate_count","eligible_count",
+                 "dry_run_candidate","switch_simulation","reason") if k in clash},
+            "clash_auto_switch_mode": "simulation_only" if clash_active else "not_applicable",
             "codex_stream_diagnostics": stream_info,
             "codex_stream_sqlite_monitor_enabled": bool(self.config.get("codex_stream_sqlite_monitor_enabled",False)),
             "native_proxy_log_reader_enabled": bool(self.config.get("native_proxy_log_reader_enabled",False)),
@@ -1183,7 +1213,8 @@ class Guardian:
                 else "attention" if issues else "reachable"
             ),
             "business_status": "attention" if issues else "no_recent_errors",
-            "route_management": ("native_fallback" if self.config.get("native_fallback_enabled", False)
+            "route_management": ("clash_observe_only" if clash_active else
+                                 "native_fallback" if self.config.get("native_fallback_enabled", False)
                                  else "legacy_external_select"),
             "native_fallback_group": str(self.config.get("native_fallback_group", "")),
             # An observation is valid only for THIS probe cycle. In
@@ -1193,12 +1224,15 @@ class Guardian:
             "openai_egress_colo": observed.egress_colo if observed and healthy else "",
             "openai_egress_country": observed.egress_country if observed and healthy else "",
             "openai_egress_source": "chatgpt_public_edge" if observed and healthy else "unverified",
-            "openai_group_backend_name": str(native.get("name","")) if native_recent else "",
-            "openai_group_backend_verified": bool(native_recent),
-            "openai_group_backend_observed_at": native.get("observed_at","") if native else "",
-            "openai_group_backend_source": "shadowrocket_native_proxy_log" if native_recent else "unverified",
-            "current_node_scope": ("shadowrocket_global_selection" if self.config.get("native_fallback_enabled", False)
-                                   else "shadowrocket_selected_server"),
+            "openai_group_backend_name": clash_node if clash_active else str(native.get("name","")) if native_recent else "",
+            "openai_group_backend_verified": clash_request_verified if clash_active else bool(native_recent),
+            "openai_group_backend_observed_at": (datetime.fromtimestamp(int(clash.get("observed_at",0))).astimezone().isoformat(timespec="seconds")
+                                                 if clash_request_verified else native.get("observed_at","") if native and not clash_active else ""),
+            "openai_group_backend_source": ("mihomo_active_connections" if clash_request_verified else "unverified") if clash_active
+                                         else "shadowrocket_native_proxy_log" if native_recent else "unverified",
+            "current_node_scope": "clash_selected_group" if clash_active else (
+                "shadowrocket_global_selection" if self.config.get("native_fallback_enabled", False)
+                else "shadowrocket_selected_server"),
             "recovery_state": self.recovery_state,
             "recovery_reason": self.recovery_reason,
             "recovery_attempt_count": self.recovery_attempt_count,
@@ -1212,8 +1246,8 @@ class Guardian:
             "public_edge_outage_pending": self.edge_outage_started_at is not None,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "healthy": healthy,
-            "current_node": self.current_node,
-            "current_node_verified": self.current_node_verified,
+            "current_node": clash.get("selected_node", "") if clash_active else self.current_node,
+            "current_node_verified": bool(clash.get("selected_node") and clash.get("api_healthy") is True) if clash_active else self.current_node_verified,
             "recent_failure_score": len(self.failure_times),
             "new_log_failures": log_failures,
             "last_switch_monotonic": self.last_switch_at,
@@ -1257,11 +1291,68 @@ class Guardian:
             )
         return healthy, results
 
+    def refresh_active_backend(self) -> None:
+        """Follow the existing system-proxy owner, never manage either proxy.
+
+        A failed/stale Clash read cannot trigger Shadowrocket reconnects: once
+        a Clash-owned system proxy is seen, its own listener is preferred and
+        service changes are read-only. No private subscription data is used.
+        """
+        if not self.config.get("proxy_backend_auto_detect_enabled", False):
+            return
+        helper = DEFAULT_HOME / "clash_observer.py"
+        observation: dict = {}
+        if helper.is_file():
+            try:
+                proc = subprocess.run([sys.executable,str(helper)],capture_output=True,
+                                      text=True,check=False,timeout=6)
+                if proc.returncode == 0:
+                    observation = json.loads(proc.stdout)
+            except (ValueError,OSError,subprocess.SubprocessError):
+                pass
+        if observation.get("source") == "mihomo_unix_readonly" and observation.get("active") is True:
+            if self.active_backend != "clash":
+                self.logger.info("proxy control detected=clash; disabling Shadowrocket recovery path")
+            self.active_backend = "clash"
+            self.config["proxy"] = str(observation["proxy_url"])
+            self.clash_observation = observation
+            self.failure_times.clear()
+            self.manual_pause = False
+        elif self.active_backend == "clash":
+            # Switch back only after observing the ORIGINAL Shadowrocket port
+            # as the explicit local system proxy and a live listener. An API
+            # timeout or an unset proxy must never reactivate Shadowrocket.
+            original_port = urlparse(self.shadowrocket_proxy).port
+            if (observation.get("reason") == "proxy_port_mismatch"
+                and observation.get("system_proxy_port") == original_port
+                and proxy_endpoint_available(self.shadowrocket_proxy)):
+                self.logger.info("system proxy owner changed=shadowrocket")
+                self.active_backend = "shadowrocket"
+                self.config["proxy"] = self.shadowrocket_proxy
+                self.clash_observation = {}
+                self.failure_times.clear()
+                self.manual_pause = False
+            else:
+                self.clash_observation = {"source":"mihomo_unix_readonly","active":False,
+                                          "reason":observation.get("reason","unavailable")}
+        else:
+            self.config["proxy"] = self.shadowrocket_proxy
+            self.clash_observation = {}
+
     def cycle(self) -> bool:
         if not self.config.get("enabled", True):
             self.logger.info("guardian disabled by configuration")
             return True
-        observed_node = current_shadowrocket_node()
+        self.refresh_active_backend()
+        # Clash still listening is not proof it owns the current system path.
+        # Fail closed if ownership can no longer be established from scutil.
+        if self.active_backend == "clash" and self.clash_observation.get("active") is not True:
+            self.recovery_state = "backend_unverified"
+            self.recovery_reason = "系统代理不再确认属于 Clash；未触发其他代理恢复"
+            self.write_status([ProbeResult("proxy_owner",False,0,False,0.0,"unverified")],
+                              0,False,proxy_available=False,tunnel_stop_reason="backend_unverified")
+            return False
+        observed_node = None if self.active_backend == "clash" else current_shadowrocket_node()
         self.current_node_verified = observed_node is not None
         if observed_node:
             if self.current_node and observed_node != self.current_node:
@@ -1274,6 +1365,14 @@ class Guardian:
             self.current_node = observed_node
         proxy_available = proxy_endpoint_available(self.config["proxy"])
         tunnel_stop_reason = "none"
+        if not proxy_available and self.active_backend == "clash":
+            # Never launch Shadowrocket to 'repair' an absent Clash listener.
+            self.recovery_state = "clash_unavailable"
+            self.recovery_reason = "Clash 代理接口不可达，未执行其他代理的恢复操作"
+            self.failure_times.clear()
+            self.write_status([ProbeResult("proxy",False,0,False,0.0,"clash listener unavailable")],
+                              0,False,proxy_available=False,tunnel_stop_reason="clash_unavailable")
+            return False
         if not proxy_available:
             tunnel_stop_reason = latest_shadowrocket_stop_reason(
                 int(self.config["tunnel_event_lookback_seconds"])
@@ -1357,7 +1456,7 @@ class Guardian:
             if self.recovery_state not in ("selector_unavailable","no_candidates",
                                            "candidate_unhealthy"):
                 self.recovery_state = "degraded"
-        switch_required = self.should_switch()
+        switch_required = self.active_backend != "clash" and self.should_switch()
         self.write_status(
             results,
             len(log_failures),
@@ -1368,7 +1467,8 @@ class Guardian:
         self.logger.info(
             "health=%s node=%s score=%d probes=%s",
             "ok" if healthy else "bad",
-            self.current_node or "unknown",
+            (self.clash_observation.get("selected_node", "unknown") if self.active_backend == "clash"
+             else self.current_node or "unknown"),
             len(self.failure_times),
             self._probe_summary(results),
         )

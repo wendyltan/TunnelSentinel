@@ -16,7 +16,7 @@ final class IntegratedRecovery {
         let info:[String:String]=[
             "authorization_required":"需授权 TunnelSentinel",
             "ready_disabled":"关闭","armed":"待命",
-            "limited":"监测中 · 切换受限",
+            "limited":"监测中 · 切换受限","clash_observing":"Clash 模拟中",
             "recovered":"分组节点已变 · 业务待验","switching":"切换验证中",
             "verifying":"验证中","blocked":"暂停（需检查）",
             "paused":"暂停","rolled_back":"已回滚"
@@ -77,6 +77,11 @@ final class IntegratedRecovery {
         busy=true
         defer{busy=false}
         let cfg=load(base.appendingPathComponent("config.json"))
+        let live=load(base.appendingPathComponent("status.json"))
+        if live["route_management"] as? String == "clash_observe_only" {
+            reported("clash_observing",reason:"Clash 本地 API 只读；故障转移待模拟验收",armed:false)
+            return
+        }
         let operating=enabled(cfg)
         // While disabled, no macOS Accessibility permission is necessary.
         if !operating {

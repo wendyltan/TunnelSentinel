@@ -28,7 +28,8 @@ class MenuCompactStatusTests(unittest.TestCase):
 
     def test_historic_native_node_is_not_presented_as_current(self):
         card = menu.split('private func menuCard() -> NSView {',1)[1].split('private func menuItem(',1)[0]
-        self.assertIn('let egressTitle = observedEgress', card)
+        self.assertIn('let egressTitle = clashMode', card)
+        self.assertIn(': observedEgress', card)
         self.assertIn('nativeGroupUIRecent ? snapshot.nativeGroupUINode',card)
         self.assertNotIn('snapshot.backendLastLoggedName',card)
         self.assertNotIn('snapshot.userLastVerifiedNode',card)

@@ -252,3 +252,13 @@ swiftc -parse-as-library -O -framework AppKit \
 菜单栏使用原生 macOS 菜单材质，顶部信息卡不再单独绘制不透明 `.windowBackgroundColor`，避免上下色差和右侧留白。主 App 在启用原生 fallback 时直接使用 Guardian 的全局节点状态，不重复读取 Shadowrocket 受保护的 App Group 偏好，避免无必要的“访问其他 App 数据”权限请求。2026-10-25 实机深色菜单截图已核对；浅色外观仍需后续人工验收。
 
 **2026-10-25 菜单栏收窄与状态口径：** 信息卡由 376pt 缩至 340pt。实机 AX 测得系统菜单总宽亦为 340pt，因此分隔线使用 x=20、width=300，左右恰好各留 20pt；内部节点框 x=18、width=304，左右各留 18pt；单独占据菜单栏的长节点列表改为“状态 · GPT 实测出口地区”。顶部主信息优先显示最近周期探测的 OpenAI 公共出口（区域/IP），与 Shadowrocket 分组节点严格区分：只有主 App 的原生 AX 在最近约 105 秒读取到分组列表当前选中节点时，才展示近期组内节点，否则显示“当前节点未核实”，历史 Seattle 05 等只在详情中呈现。常规公共探测不能可靠推出机场后台名称；锁屏或分组页面不可见时，原生节点可能无法持续读取。保留此前已授权的单 App 架构，不开启 Shadowrocket 全量代理日志。
+
+### Clash Verge Rev 兼容（2026-10-25）
+
+- **仍是一个监控 App，不新增代理核心。** 当前 Mac 如果 macOS HTTP/HTTPS 系统代理均指向 `127.0.0.1:<Clash mixed-port>`，且 Clash Verge 现有的私有 Unix Socket Mihomo API `/configs` 与端口一致，Guardian 自动识别为 `proxy_client=clash`，使用该端口进行 GPT 公共出口探测。识别条件严格基于**实际系统代理设置**，不是仅凭 Clash 进程存在。生产配置 `proxy_backend_auto_detect_enabled=true`，普通安装默认关闭，防止意外改变旧环境；原 Shadowrocket 配置和代理地址不被覆盖。
+- 从 Mihomo Unix Socket **只读** `/proxies`、`/configs`、`/connections`，识别 `AI → Proxies → 请求节点`、当前模式及候选数量；仅聚合 OpenAI/ChatGPT 域名的连接链，不记录 URL、请求正文、Cookie 或其他网站。若多个 GPT 请求节点并存，显示“无唯一当前请求节点”，而非随意挑选。
+- Clash 接管期间禁用所有 **旧 Shadowrocket 自动写入、重连和界面控制**；出现权限/连接/系统代理归属不明时仅报告“未核实”。只有明确观测到原来的 Shadowrocket 本地代理端口重新接管，并且端口可达，才恢复旧监控模式。Clash GUI/TUN/订阅均不被 TunnelSentinel 更改。
+- 当前 Clash 配置 `AI`（Selector）指向共享的 `Proxies`（Selector），**还没有独立 GPT-only 自动选择组**。候选延迟只能提供网络层初筛，不能证明 Codex WebSocket 持续可用。现阶段自动转移是 **仅观察与离线模拟**，绝不向 `/proxies/{group}` 发送 PUT，也不切换 `Proxies` 共享组以免影响其他网站。菜单的“Clash 故障转移 · 模拟研究”可查看当前组结构、候选数和假设备选。当前运行状态写在 `status.json` 的 `clash_observation` 和 `clash_failover_plan`。
+- 后续真实故障转移门槛：在 Clash 配置非活动副本中建立 GPT 专用组并验证规则覆盖、候选过滤及 TUN/系统代理兼容；根据 Codex 错误、候选近期健康与节点冷却排序，验证实际连接恢复，具备 readback/rollback 后，才能单独启用真实切换。必须先经过安全验收，不因本版本 `模拟中` 而自动执行。
+
+**已完成离线分组结构实验：** `research/clash-openai-offline-lab.yaml` 使用两条虚构的回环代理节点建立 `OpenAI-Recovery-Lab` fallback 专用组，当前 Clash Verge 内置 Mihomo `-t` 配置校验通过；没有启用，不包含订阅 URL 或真实节点凭据。将来实装前仍需验证完整域名覆盖、候选健康、规则互不影响、可回退切换及业务流式恢复。

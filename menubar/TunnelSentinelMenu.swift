@@ -29,6 +29,16 @@ private struct Snapshot {
     var failures = 0
     var routeManagement = "legacy_external_select"
     var nativeFallbackGroup = ""
+    var proxyClient = "shadowrocket"
+    var clashMode = ""
+    var clashGroup = ""
+    var clashGroupType = ""
+    var clashParent = ""
+    var clashSelectedNode = ""
+    var clashActiveConnections = 0
+    var clashCandidateCount = 0
+    var clashEligibleCount = 0
+    var clashDryRunCandidate = ""
     var egressObserved = false
     var egressIP = ""
     var egressColo = ""
@@ -201,6 +211,18 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         next.failures = values["recent_failure_score"] as? Int ?? 0
         next.routeManagement = values["route_management"] as? String ?? "legacy_external_select"
         next.nativeFallbackGroup = values["native_fallback_group"] as? String ?? ""
+        next.proxyClient = values["proxy_client"] as? String ?? "shadowrocket"
+        if let clash = values["clash_observation"] as? [String:Any] {
+            next.clashMode = clash["mode"] as? String ?? ""
+            next.clashGroup = clash["ai_group"] as? String ?? ""
+            next.clashGroupType = clash["ai_group_type"] as? String ?? ""
+            next.clashParent = clash["ai_selection"] as? String ?? ""
+            next.clashSelectedNode = clash["selected_node"] as? String ?? ""
+            next.clashActiveConnections = clash["active_gpt_connections"] as? Int ?? 0
+            next.clashCandidateCount = clash["candidate_count"] as? Int ?? 0
+            next.clashEligibleCount = clash["eligible_count"] as? Int ?? 0
+            next.clashDryRunCandidate = clash["dry_run_candidate"] as? String ?? ""
+        }
         // Native AX evidence is read opportunistically by the same approved
         // TunnelSentinel.app; never treat old per-request or screenshot data
         // as the currently selected fallback backend.
@@ -300,7 +322,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         // separately labelled *global* selection in status.json. Avoid a
         // redundant cross-App protected-preferences read from this menu app:
         // macOS may show a broad "access data from other apps" TCC prompt.
-        if snapshot.routeManagement == "native_fallback" { return }
+        if snapshot.routeManagement == "native_fallback" || snapshot.routeManagement == "clash_observe_only" { return }
         guard !nodeLookupBusy && !nodeLookupSuspended else { return }
         if let last = lastNodeReadFailedAt, Date().timeIntervalSince(last) < 20 { return }
         nodeLookupBusy = true
@@ -362,7 +384,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     }
 
     private var nodePending: Bool {
-        if snapshot.routeManagement == "native_fallback" { return false }
+        if snapshot.routeManagement == "native_fallback" || snapshot.routeManagement == "clash_observe_only" { return false }
         guard let liveNode, !liveNode.isEmpty else { return false }
         return liveNode != snapshot.checkedNode
     }
@@ -370,7 +392,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         // Native fallback selects egress independently from the global node.
         // An unreadable global-node preference is not a network fault and
         // should not override a passing OpenAI edge + quiet client diagnostics.
-        if snapshot.routeManagement == "native_fallback" { return false }
+        if snapshot.routeManagement == "native_fallback" || snapshot.routeManagement == "clash_observe_only" { return false }
         return liveNode == nil && !snapshot.nodeVerified
     }
 
@@ -453,7 +475,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     }
 
     private var detail: String {
-        if guardianPaused { return "手动暂停状态 · Shadowrocket 未受影响" }
+        if guardianPaused { return "监控已暂停 · 当前代理未受影响" }
         if !guardianRunning { return "后台守护未运行，无法读取实时诊断" }
         if !snapshot.fresh { return "没有足够新的健康检测记录" }
         if nodePending { return "节点名称已同步，新节点的链路健康尚未确认" }
@@ -464,6 +486,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         if !snapshot.networkHealthy { return "公共入口不可达 · 等待有界恢复检查" }
         if snapshot.business == "attention" { return "代理可达，但客户端近期报告错误" }
         if nodeUnverified { return "Shadowrocket 节点名读取受限；链路仍在独立监测" }
+        if snapshot.routeManagement == "clash_observe_only" {
+            return "Clash \(snapshot.clashMode.uppercased()) · AI → \(snapshot.clashParent) · 仅监测"
+        }
         if snapshot.routeManagement == "native_fallback" {
             return "公共入口可达 · OpenAI 由 Shadowrocket fallback 自动选路"
         }
@@ -549,24 +574,29 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
 
         let nodeBox = AppearanceFillView(frame: NSRect(x: 18, y: 114, width: w - 36, height: 106),
                                          color: .controlBackgroundColor, cornerRadius: 10)
-        let backendSource = snapshot.fresh && snapshot.networkHealthy && snapshot.egressObserved
+        let clashMode = snapshot.routeManagement == "clash_observe_only"
+        let backendSource = clashMode ? "GPT 实际请求节点 · Clash 本地 API" :
+            snapshot.fresh && snapshot.networkHealthy && snapshot.egressObserved
             ? "GPT 实测出口 · 周期探测" : "GPT 出口 · 待确认"
         nodeBox.addSubview(label(backendSource,
                                 font: .systemFont(ofSize: 10, weight: .medium),
                                 color: .secondaryLabelColor,
                                 frame: NSRect(x: 12, y: 84, width: nodeBox.bounds.width - 24, height: 15)))
-        let egressTitle = observedEgress
+        let egressTitle = clashMode
+            ? (snapshot.backendVerified ? snapshot.actualBackendName : "当前没有可确认的 GPT 活跃请求")
+            : observedEgress
         nodeBox.addSubview(label(egressTitle,
                                 font: .systemFont(ofSize: 13.5, weight: .semibold),
                                 color: .labelColor,
                                 frame: NSRect(x: 12, y: 57, width: nodeBox.bounds.width - 24, height: 22)))
-        nodeBox.addSubview(label(nativeGroupUIRecent
-                                ? "GPT 分组节点 · 最近原生界面读取"
+        nodeBox.addSubview(label(clashMode ? "GPT 公共出口 · 周期探测" :
+                                nativeGroupUIRecent ? "GPT 分组节点 · 最近原生界面读取"
                                 : "GPT 分组节点 · 暂无近期读取",
                                 font: .systemFont(ofSize: 10, weight: .medium),
                                 color: .secondaryLabelColor,
                                 frame: NSRect(x: 12, y: 35, width: nodeBox.bounds.width - 24, height: 15)))
-        nodeBox.addSubview(label(nativeGroupUIRecent ? snapshot.nativeGroupUINode : "当前节点未核实 · 可查看详细状态",
+        nodeBox.addSubview(label(clashMode ? observedEgress :
+                                 nativeGroupUIRecent ? snapshot.nativeGroupUINode : "当前节点未核实 · 可查看详细状态",
                                 font: .systemFont(ofSize: 13.5, weight: .semibold),
                                 color: .labelColor,
                                 frame: NSRect(x: 12, y: 9, width: nodeBox.bounds.width - 24, height: 23)))
@@ -601,7 +631,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             ? String(snapshot.checkedAt.dropFirst(11).prefix(8)) : "—"
         let recoveryText = recoveryBlocked && snapshot.recoveryRetrySeconds > 0
             ? " · 恢复重试约 \(snapshot.recoveryRetrySeconds / 60) 分钟后"
-            : " · 节点读取受系统权限约束"
+            : (clashMode ? " · Clash 本地 API" : " · 节点读取受系统权限约束")
         v.addSubview(label("最近检测 \(timeText)\(recoveryText)",
                            font: .systemFont(ofSize: 10), color: .tertiaryLabelColor,
                            frame: NSRect(x: 20, y: 17, width: w - 40, height: 18)))
@@ -693,6 +723,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         guard let statusItem else { return }
         let fingerprint = [
             headline, detail, liveNode ?? "", snapshot.checkedNode, snapshot.checkedAt,
+            snapshot.proxyClient,snapshot.clashMode,snapshot.clashGroup,snapshot.clashParent,
+            snapshot.clashSelectedNode,String(snapshot.clashActiveConnections),
+            String(snapshot.clashCandidateCount),String(snapshot.clashEligibleCount),
             String(snapshot.fresh), String(snapshot.networkHealthy),
             String(guardianRunning), String(guardianPaused), String(nodeUnverified),
             statusLabel, menuBarStateMarker, IntegratedRecovery.shared.summary,
@@ -726,12 +759,17 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             && !snapshot.egressCountry.isEmpty ? " · GPT \(shortEgress)" : ""
         statusItem.button?.title = "\(menuBarStateMarker) \(statusLabel)\(compactEdge)"
         statusItem.button?.contentTintColor = nil
-        let selectedDescription = nativeGroupUIRecent
+        let selectedDescription = snapshot.routeManagement == "clash_observe_only"
+            ? "Clash AI→\(snapshot.clashParent)；最近 GPT 请求节点：\(snapshot.backendVerified ? snapshot.actualBackendName : "未核实")；候选：\(snapshot.clashCandidateCount)"
+            : nativeGroupUIRecent
             ? "Shadowrocket 分组界面近期选中：\(snapshot.nativeGroupUINode)（仅代表界面读数）"
             : snapshot.fresh && snapshot.backendVerified
             ? "GPT 最近请求实际节点：\(snapshot.actualBackendName)（\(snapshot.backendObservedAt)）"
             : "GPT 当前节点尚未核实；上次请求记录或截图：\(snapshot.backendLastLoggedName.isEmpty ? snapshot.userLastVerifiedNode : snapshot.backendLastLoggedName)（\(snapshot.backendLastLoggedAt.isEmpty ? snapshot.userLastVerifiedDate : snapshot.backendLastLoggedAt)）"
-        statusItem.button?.toolTip = "TunnelSentinel · \(statusLabel)\n\(headline)\n\(selectedDescription)\nOpenAI 公共出口：\(observedEgress)\n全局节点：\(globalNode)\n\(detail)"
+        let routeNodeDescription = snapshot.routeManagement == "clash_observe_only"
+            ? "Clash Proxies 当前选中：\(snapshot.clashSelectedNode)"
+            : "Shadowrocket 全局节点：\(globalNode)"
+        statusItem.button?.toolTip = "TunnelSentinel · \(statusLabel)\n\(headline)\n\(selectedDescription)\nOpenAI 公共出口：\(observedEgress)\n\(routeNodeDescription)\n\(detail)"
         statusItem.button?.setAccessibilityLabel("TunnelSentinel，\(statusLabel)，OpenAI 出口 \(shortEgress)，全局节点 \(globalNode)")
         statusItem.button?.setAccessibilityValue("\(headline)；\(detail)")
         let menu = NSMenu()
@@ -744,13 +782,18 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                               action: #selector(showAIMatrix)))
         menu.addItem(menuItem("查看 GPT 节点状态与事件", symbol: "list.bullet.rectangle", action: #selector(openLog)))
         let recovery = IntegratedRecovery.shared.summary
-        menu.addItem(menuItem("节点故障转移 · \(recovery)", symbol: "arrow.triangle.2.circlepath",
-                              action: #selector(openRecoverySettings)))
-        let autoSwitchOn = recoveryEnabled()
-        menu.addItem(menuItem(autoSwitchOn ? "关闭 Codex 自动故障转移" : "开启 Codex 自动故障转移",
-                              symbol: autoSwitchOn ? "pause.circle" : "play.circle",
-                              action: #selector(toggleRecovery)))
-        if recoveryBlocked || !snapshot.networkHealthy {
+        if snapshot.routeManagement == "clash_observe_only" {
+            menu.addItem(menuItem("Clash 故障转移 · 模拟研究（无修改）", symbol: "shield-check",
+                                  action: #selector(showClashRecoveryPlan)))
+        } else {
+            menu.addItem(menuItem("节点故障转移 · \(recovery)", symbol: "arrow.triangle.2.circlepath",
+                                  action: #selector(openRecoverySettings)))
+            let autoSwitchOn = recoveryEnabled()
+            menu.addItem(menuItem(autoSwitchOn ? "关闭 Codex 自动故障转移" : "开启 Codex 自动故障转移",
+                                  symbol: autoSwitchOn ? "pause.circle" : "play.circle",
+                                  action: #selector(toggleRecovery)))
+        }
+        if (recoveryBlocked || !snapshot.networkHealthy) && snapshot.routeManagement != "clash_observe_only" {
             menu.addItem(menuItem("打开 Shadowrocket 手动处理", symbol: "network",
                                   action: #selector(openShadowrocket)))
         }
@@ -841,6 +884,25 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     }
 
     private func nodeEvidenceText() -> String {
+        if snapshot.routeManagement == "clash_observe_only" {
+            return """
+                GPT 节点状态与事件 · Clash Verge
+                ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                代理客户端：Clash Verge / Mihomo（\(snapshot.clashMode)）
+                GPT 规则分组：\(snapshot.clashGroup) → \(snapshot.clashParent)
+                当前组内选中节点：\(snapshot.clashSelectedNode)
+                活跃 GPT 请求：\(snapshot.clashActiveConnections)
+                本地 API 最近请求节点：\(snapshot.backendVerified ? snapshot.actualBackendName : "无近期证据")
+                请求级证据：\(snapshot.backendVerified ? "Mihomo 连接链（非历史出口推测）" : "无当前活跃连接，不能证明此刻实际节点")
+                GPT 公共出口：\(observedEgress)
+
+                当前候选：\(snapshot.clashCandidateCount)
+                有近期延迟记录：\(snapshot.clashEligibleCount)
+                故障切换：离线模拟，尚未投入真实节点切换
+                共享 AI → Proxies 不能直接修改 Proxies，否则可能影响其他业务。
+                下一阶段需独立 OpenAI 组，并经过规则覆盖与业务恢复验证。
+                """
+        }
         let group = snapshot.nativeFallbackGroup.isEmpty ? "未配置" : snapshot.nativeFallbackGroup
         let backend: String
         if nativeGroupUIRecent {
@@ -1064,6 +1126,24 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             self.lastRenderedState = ""
             self.rebuildMenu()
         } catch { showError("配置保存失败，自动切换状态未改变") }
+    }
+
+    @objc private func showClashRecoveryPlan() {
+        let notice=NSAlert()
+        notice.messageText="Clash 自动恢复 · 模拟研究"
+        notice.informativeText="""
+            控制面：Clash Verge / Mihomo Unix Socket（只读）
+            AI 分组：\(snapshot.clashGroup)（\(snapshot.clashGroupType)） → \(snapshot.clashParent)
+            当前选中：\(snapshot.clashSelectedNode)
+            GPT 活跃连接：\(snapshot.clashActiveConnections)
+            可见候选：\(snapshot.clashCandidateCount)，有近期延迟记录：\(snapshot.clashEligibleCount)
+            模拟备选：\(snapshot.clashDryRunCandidate.isEmpty ? "暂无证据" : snapshot.clashDryRunCandidate)
+
+            研究模式绝不发送 PUT、修改策略组、测试节点或重启代理。
+            延迟可达不等于 Codex 业务流式请求成功。
+            """
+        notice.addButton(withTitle:"知道了")
+        notice.runModal()
     }
 
     @objc private func openRecoverySettings() {

@@ -17,8 +17,8 @@ class MenuSurfaceTests(unittest.TestCase):
     def test_native_fallback_does_not_request_other_apps_data(self):
         reader = SOURCE.split("private func refreshNode() {", 1)[1].split(
             "private var nodePending:", 1)[0]
-        self.assertIn('if snapshot.routeManagement == "native_fallback" { return }', reader)
-        self.assertLess(reader.index('if snapshot.routeManagement == "native_fallback" { return }'),
+        self.assertIn('if snapshot.routeManagement == "native_fallback" || snapshot.routeManagement == "clash_observe_only" { return }', reader)
+        self.assertLess(reader.index('if snapshot.routeManagement == "native_fallback" || snapshot.routeManagement == "clash_observe_only" { return }'),
                         reader.index("process.executableURL"))
 
 

@@ -10,6 +10,8 @@ python_path="$(command -v python3)"
 mkdir -p "$install_dir" "$log_dir" "$HOME/Library/LaunchAgents"
 cp "$source_dir/openai_link_guardian.py" "$install_dir/openai_link_guardian.py"
 chmod 700 "$install_dir/openai_link_guardian.py"
+cp "$source_dir/scripts/clash_observer.py" "$install_dir/clash_observer.py"
+chmod 700 "$install_dir/clash_observer.py"
 if [[ ! -f "$install_dir/config.json" ]]; then
   cp "$source_dir/config.json" "$install_dir/config.json"
   chmod 600 "$install_dir/config.json"

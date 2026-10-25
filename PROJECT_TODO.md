@@ -90,3 +90,15 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [x] 后台 Python→控制器的 TCC 归因问题已通过正式 `launchctl submit` 架构消除，macOS 识别请求者为控制器自身；87 项回归通过，已部署只读监测
 - [ ] **当前唯一权限阻塞**：系统设置蓝色 `TunnelSentinelRouteController` 条目在 Apple `tccutil reset` 该 Bundle ID 后仍保留，极可能是旧可执行文件的路径授权。需用户在系统设置中选中该条并点底部「−」移除，再通过「+」选中整个 `~/Applications/TunnelSentinelRouteController.app`，而不是内层 `Contents/MacOS` 二进制，开启授权
 - [ ] 授权后用真正独立 `launchctl submit` 验证 ACCESSIBILITY 与 EVENT_CONTROL 均 granted，再依程序默认安全模式开启自动转移；必须观察原生节点变更与 Codex 业务成功，不能把编辑成功当成业务恢复
+
+### 2026-10-25 Clash Verge adapter / 自动故障转移 P0–P1
+- [x] 当前系统代理独占判断：与 Mihomo live mixed-port 比对，私有 Unix Socket 控制器，无额外 TCP API 或管理权限
+- [x] Guardian 动态切换代理探测，Clash 接管时阻断 Shadowrocket 传统重连和原生 UI 节点改写；返回旧端口须证据匹配
+- [x] OpenAI 请求连接链、AI→Proxies 策略、候选动态发现及仅最近运输延迟评估；避免历史出口 IP 冒充节点
+- [x] 菜单栏 Clash 监测与自动恢复模拟模式；AI 共享组当前绝不真实自动切换
+- [x] 运行时部署与隔离测试，包括 API 失联和选路归属丢失；保留一个菜单栏 App
+- [ ] P0：在不活动配置副本中设计 `OpenAI` 专用策略组，检查 GPT/Codex 域名路由覆盖与对非 GPT 流量的影响；不得直接改写当前订阅
+- [ ] P0：选择节点健康证据策略（静态 GET/HEAD 与真实 WebSocket 区分），失败隔离与自动恢复；模拟连续故障、重复触发、睡眠/唤醒
+- [ ] P1：补充可撤销的受控组内真实切换、候选 API readback 与故障回滚，在 user-approved 维护窗口做首次真实验收
+- [ ] P1：确认 macOS 关闭系统代理、改开 Clash TUN、或重新切回 Shadowrocket 后的恢复流程；当前仅识别系统 HTTP(S) 代理接管
+- [ ] 用户视觉验收：Clash 节点显示、来源可信度、宽度 340pt 的菜单栏布局

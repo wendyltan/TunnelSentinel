@@ -14,6 +14,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
+import uuid
 import time
 
 HOME = Path.home() / "Library/Application Support/OpenAILinkGuardian"
@@ -102,29 +104,82 @@ def parse_node(label):
     found=[node for node in CANDIDATES if value.endswith(node)]
     return found[0] if len(found)==1 else None
 
+def native_controller_command(arguments, exe=APP, timeout=10):
+    """Launch signed app as launchd's *direct* child (not Python's).
+
+    macOS TCC attributes the request to the responsible process. Python
+    spawning an AX client inherits Python's authorization context, even if
+    the signed child is independently approved. launchctl submit uses the
+    supported launchd process architecture; never edits TCC or disguises IDs.
+    """
+    if not Path(exe).is_file():
+        return None, "controller_not_installed"
+    argv=list(arguments)
+    if not argv or argv[0] not in ("--check-permissions","--current","--probe","--set"):
+        return None,"unsupported_controller_command"
+    if argv[0]=="--set":
+        if len(argv)!=4 or argv[2]!="--expect":
+            return None,"invalid_controller_arguments"
+        canon={rule_for(x) for x in (
+            (),("JAPAN 04",),("JAPAN 14",),("SEATTLE 05",),
+            ("SAN JOSE 07",),("JAPAN 04","JAPAN 14"),
+            ("JAPAN 04","SEATTLE 05"),("JAPAN 04","SAN JOSE 07"),
+            ("JAPAN 14","SEATTLE 05"),("JAPAN 14","SAN JOSE 07"),
+            ("SEATTLE 05","SAN JOSE 07"))}
+        if argv[1] not in canon or argv[3] not in canon:
+            return None,"invalid_candidate_rule"
+    elif len(argv)!=1:
+        return None,"unexpected_controller_arguments"
+    label="com.wuwendi.tunnelsentinel.ax."+uuid.uuid4().hex
+    try:
+        with tempfile.TemporaryDirectory(prefix="ts-route-") as directory:
+            root=Path(directory)
+            output=root/"stdout"
+            errors=root/"stderr"
+            os.chmod(directory,0o700)
+            cmd=["/bin/launchctl","submit","-l",label,"-o",str(output),
+                 "-e",str(errors),"--",str(exe),*argv]
+            try:
+                launched=subprocess.run(cmd,text=True,capture_output=True,
+                                        check=False,timeout=3)
+                if launched.returncode:
+                    return None,"launchd_submission_denied"
+                deadline=time.monotonic()+timeout
+                while time.monotonic()<deadline:
+                    try:
+                        message=output.read_text(errors="replace")
+                    except OSError:
+                        message=""
+                    if message.strip():
+                        return message.strip(),"launched_directly"
+                    time.sleep(.12)
+                return None,"controller_timeout"
+            except (OSError,subprocess.TimeoutExpired):
+                return None,"launchd_unavailable"
+            finally:
+                try:
+                    subprocess.run(["/bin/launchctl","remove",label],
+                                   text=True,capture_output=True,timeout=2)
+                except (OSError,subprocess.TimeoutExpired):
+                    pass
+    except OSError:
+        return None,"temporary_output_unavailable"
+
 def current_node(exe=APP):
     if not exe.exists():
         return None,"controller_not_installed"
-    try:
-        result=subprocess.run([str(exe),"--current"],capture_output=True,
-                              text=True,check=False,timeout=6)
-    except (OSError,subprocess.TimeoutExpired):
-        return None,"controller_timeout"
-    if result.returncode:
-        return None,"group_not_visible_or_access_denied"
-    node=next((parse_node(line) for line in result.stdout.splitlines()
+    output,reason=native_controller_command(["--current"],exe=exe,timeout=7)
+    if not output:
+        return None,reason
+    node=next((parse_node(line) for line in output.splitlines()
                if parse_node(line)),None)
     return node,("ok" if node else "unexpected_node")
 
 def run_editor(target,expected,exe=APP):
-    try:
-        result=subprocess.run(
-            [str(exe),"--set",target,"--expect",expected],
-            capture_output=True,text=True,check=False,timeout=12)
-    except (OSError,subprocess.TimeoutExpired):
-        return False,"controller_timeout"
-    if result.returncode or "POLICY_PERSISTED group=OpenAI-Resilience" not in result.stdout:
-        return False,"save_not_confirmed"
+    output,reason=native_controller_command(
+        ["--set",target,"--expect",expected],exe=exe,timeout=12)
+    if not output or "POLICY_PERSISTED group=OpenAI-Resilience" not in output:
+        return False,reason if not output else "save_not_confirmed"
     return True,"saved_and_reopened"
 
 def apply_transition(snapshot,state,exe=APP,now=None):
@@ -238,15 +293,15 @@ def background_preflight(config_path=HOME/"config.json",
             "timestamp":int(time.time()),
             "controller_access":"unknown","native_group_ui":"not_checked"}
     try:
-        perm=subprocess.run([str(exe),"--check-permissions"],capture_output=True,
-                            text=True,timeout=5,check=False)
-        report["controller_access"]="granted" if perm.returncode==0 else "required"
-        if perm.returncode==0:
-            current=subprocess.run([str(exe),"--current"],capture_output=True,
-                                   text=True,timeout=7,check=False)
-            node=next((parse_node(line) for line in current.stdout.splitlines()
-                       if parse_node(line)),None)
-            report["native_group_ui"]="readable" if current.returncode==0 and node else "not_available"
+        permission,reason=native_controller_command(
+            ["--check-permissions"],exe=exe,timeout=5)
+        report["controller_access"]=(
+            "granted" if permission and
+            "ACCESSIBILITY=granted EVENT_CONTROL=granted" in permission
+            else "required" if permission else reason)
+        if report["controller_access"]=="granted":
+            node,read_reason=current_node(exe)
+            report["native_group_ui"]="readable" if node else "not_available"
             report["node"]=node or ""
     except (OSError,subprocess.TimeoutExpired):
         report["controller_access"]="timeout_or_unavailable"

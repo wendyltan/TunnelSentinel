@@ -244,3 +244,5 @@ TunnelSentinel 新增独立 `com.wuwendi.tunnelsentinel-autofailover` LaunchAgen
 已在原分组完成一次*不改变候选正则*的保存→关闭→自动重开→回读，耗时约 3.3 秒；全套 **85 项 Python 回归测试通过**。2026-10-25 安装了稳定 Apple Development 签名的 `~/Applications/TunnelSentinelRouteController.app` v0.2.0（固定 Bundle ID），其安全副本已备份。
 
 **注意：自动切换目前保持 `codex_auto_failover_enabled=false`。** 新签名的独立应用通过 macOS LaunchServices 启动时仍报告 `ACCESSIBILITY=required`，即交互式终端权限不能替代应用独立的辅助功能授权。须在 macOS「系统设置 → 隐私与安全性 → 辅助功能」中删除旧的临时签名项，并将**当前** `~/Applications/TunnelSentinelRouteController.app` 重新加入、启用。通过后台无改动读测后才能设置 `codex_auto_failover_enabled=true`。系统隐私数据库绝不由程序直接改写或绕过。注意 UI 控制还依赖 Shadowrocket 已打开并停留在原生分组列表/编辑页；若不可见，程序安全停止，不会假装切换成功。
+
+**2026-10-25 授权校验说明：** macOS 对辅助功能访问会考虑“责任进程”，从 Python 守护程序直接派生的辅助功能子进程并不总继承已签名应用权限。自动恢复控制已改为由 `launchctl submit` 直接启动受限签名原生控制器（85 项原回归扩充至 **87 项测试**），不使用 Python 代理其他 App 的许可。用户先前批准的同名项目可能是旧二进制的路径授权：Apple 官方 `tccutil reset Accessibility com.wuwendi.tunnelsentinel.routecontroller` 成功后，系统设置中同名蓝色条目仍存在。若后台显示 `ACCESSIBILITY=required`，请在「辅助功能」中移除旧条目，重新选择 **整个** `~/Applications/TunnelSentinelRouteController.app` 应用包并启用，而非包内可执行文件。确认后台两个标志为 `granted` 后再开启业务自动切换；不要绕过 TCC 或为了此功能给 Python/Node 开放额外权限。

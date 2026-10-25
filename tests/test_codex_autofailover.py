@@ -156,27 +156,42 @@ class AutoRecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             c=Path(d)/"config.json";result=Path(d)/"preflight.json"
             c.write_text(json.dumps({"codex_auto_preflight_enabled":True}))
-            outcomes=[
-                mock.Mock(returncode=0,stdout="ACCESSIBILITY=granted EVENT_CONTROL=granted"),
-                mock.Mock(returncode=0,stdout="CURRENT_GROUP_NODE 🇯🇵 JAPAN 14"),
-            ]
-            with mock.patch.object(route.subprocess,"run",side_effect=outcomes) as sp:
+            with mock.patch.object(route,"native_controller_command",return_value=(
+                  "ACCESSIBILITY=granted EVENT_CONTROL=granted","launched_directly")) as sp, \
+                 mock.patch.object(route,"current_node",return_value=("JAPAN 14","ok")):
                 route.background_preflight(c,result,route.APP)
             report=json.loads(result.read_text())
             self.assertEqual(report["controller_access"],"granted")
             self.assertEqual(report["node"],"JAPAN 14")
             self.assertEqual(report["native_group_ui"],"readable")
-            self.assertEqual(len(sp.call_args_list),2)
+            self.assertEqual(len(sp.call_args_list),1)
             self.assertTrue(all("--set" not in str(c) for c in sp.call_args_list))
 
     def test_preflight_disabled_does_not_launch_controller(self):
         with tempfile.TemporaryDirectory() as d:
             c=Path(d)/"config.json";o=Path(d)/"out.json"
             c.write_text(json.dumps({"codex_auto_preflight_enabled":False}))
-            with mock.patch.object(route.subprocess,"run") as sp:
+            with mock.patch.object(route,"native_controller_command") as sp:
                 self.assertEqual(route.background_preflight(c,o),0)
                 sp.assert_not_called()
             self.assertFalse(o.exists())
+
+    def test_native_command_rejects_unknown_args_without_launching(self):
+        with mock.patch.object(route.subprocess,"run") as launch:
+            for args in ([],["--wipe"],["--set","bogus","--expect","bogus"],
+                         ["--set",route.ORIGINAL,"--expect","bad"]):
+                out,reason=route.native_controller_command(args,route.APP)
+                self.assertIsNone(out)
+            launch.assert_not_called()
+
+    def test_recovery_uses_direct_signed_app_launcher_not_python_child(self):
+        with mock.patch.object(route,"native_controller_command",
+            return_value=("POLICY_PERSISTED group=OpenAI-Resilience pending_native_backend_verification=true",
+                          "launched_directly")) as launch:
+            self.assertEqual(route.run_editor(route.ORIGINAL,
+                              route.rule_for(["JAPAN 14"])),(True,"saved_and_reopened"))
+            launch.assert_called_once()
+            self.assertEqual(launch.call_args.args[0][0],"--set")
 
     def test_nonconcurrent_lock_and_privacy(self):
         with tempfile.TemporaryDirectory() as d:

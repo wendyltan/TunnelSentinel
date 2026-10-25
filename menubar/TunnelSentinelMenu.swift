@@ -280,6 +280,11 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     }
 
     private func refreshNode() {
+        // Native fallback owns OpenAI routing. Guardian already provides the
+        // separately labelled *global* selection in status.json. Avoid a
+        // redundant cross-App protected-preferences read from this menu app:
+        // macOS may show a broad "access data from other apps" TCC prompt.
+        if snapshot.routeManagement == "native_fallback" { return }
         guard !nodeLookupBusy && !nodeLookupSuspended else { return }
         if let last = lastNodeReadFailedAt, Date().timeIntervalSince(last) < 20 { return }
         nodeLookupBusy = true
@@ -501,8 +506,12 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
 
     private func menuCard() -> NSView {
         let w: CGFloat = 376
-        let v = AppearanceFillView(frame: NSRect(x: 0, y: 0, width: w, height: 326),
-                                   color: .windowBackgroundColor)
+        // The native NSMenu owns its vibrancy/material and light/dark appearance.
+        // Painting windowBackgroundColor into a fixed-width custom NSMenuItem
+        // creates a hard top/bottom color seam and exposes a strip on the right
+        // when a localized native menu command widens the menu. Keep the root
+        // transparent so the SAME system menu material fills the entire panel.
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: 326))
         v.addSubview(label("T U N N E L   S E N T I N E L",
                            font: .systemFont(ofSize: 10, weight: .bold),
                            color: .tertiaryLabelColor,

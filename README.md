@@ -241,16 +241,12 @@ swiftc -parse-as-library -O -framework AppKit \
 
 </div>
 
-### Codex 流式故障自动恢复（v0.2 控制器；后台授权待验收）
+### 当前自动恢复架构 · TunnelSentinel v1.6.0（2026-10-25）
 
-TunnelSentinel 新增独立 `com.wuwendi.tunnelsentinel-autofailover` LaunchAgent（45 秒周期），监测 Codex 原生响应流是否在 **210 秒内累计出现至少 3 次 Broken pipe、WebSocket 握手失败或 Connection reset**。正常情况下，它不会干预 Shadowrocket，故障触发也不修改全局节点、Tailscale 或系统代理。
+**仅有一个需要用户管理的 Mac App：`~/Applications/TunnelSentinel.app`。** 菜单栏界面、macOS 辅助功能授权、Shadowrocket `OpenAI-Resilience` 分组控制与 Codex 错误触发恢复均已整合在主 App 内。旧的 `TunnelSentinelRouteController.app` 和独立 `com.wuwendi.tunnelsentinel-autofailover` LaunchAgent 均已停用并归档，不要重新安装或为其授权。`OpenAILinkGuardian` 仍是后台无界面的只读诊断服务，无需额外授权辅助功能。
 
-改造已经可以从 Shadowrocket **原生辅助功能控件**识别 `OpenAI-Resilience` 当前分组后端（2026-10-25 实测显示 Japan 14）、唯一可编辑的候选正则字段与保存按钮，不再通过固定坐标或剪贴板操作。当前分组允许的候选是 Japan 04、Japan 14、Seattle 05、San Jose 07；在确有 Codex 错误时，读取*实际当前节点*后仅排除该节点，其他节点交给 Shadowrocket 原生 fallback；**保留至少两个候选**。控制器校验原始规则、保存后重开同一分组并核对正则，才将规则保存视为通过，后续仍必须观察原生分组是否出现不同的节点。
+当前 `codex_auto_failover_enabled=true`、`codex_auto_preflight_enabled=false`；主 App 每 45 秒检查本地 Guardian 的 Codex 流错误统计。仅当 **210 秒内至少 3 次** Broken pipe、WebSocket 握手失败或 Connection reset，且新鲜探测、分组与原规则均吻合时，才尝试排除实际已观测的故障节点。限制：10 分钟冷却、每日最多 3 次操作、最多排除 2 个节点、始终保留至少 2 个候选；保存规则后须重开回读并观察原生分组后端变化，失败则停止，公共入口失效时尝试一次回滚。不会重启 Shadowrocket、修改全局代理或 Tailscale。
 
-安全边界：**10 分钟冷却，每日最多 3 次前进操作，一次最多排除 2 个候选**；同一故障去重，受控并发锁；上次修改尚未验证时禁止继续排除；修改后公共入口丢失时仅尝试一次原规则回滚，任何权限、页面、内容不匹配均停止。**这不能保证候选节点已通过真实 Codex 模型交互**；实际恢复仍需要业务连接结果验证。
+**真实业务恢复仍待自然故障验收。** `armed` 表示监测待命，不代表已发生成功切换。macOS 锁屏、Shadowrocket 分组列表不可见或权限被撤销时可能无法操作，程序应安全停止；当前四个固定节点名在用户更换订阅后仍需适配。
 
-已在原分组完成一次*不改变候选正则*的保存→关闭→自动重开→回读，耗时约 3.3 秒；全套 **85 项 Python 回归测试通过**。2026-10-25 安装了稳定 Apple Development 签名的 `~/Applications/TunnelSentinelRouteController.app` v0.2.0（固定 Bundle ID），其安全副本已备份。
-
-**注意：自动切换目前保持 `codex_auto_failover_enabled=false`。** 新签名的独立应用通过 macOS LaunchServices 启动时仍报告 `ACCESSIBILITY=required`，即交互式终端权限不能替代应用独立的辅助功能授权。须在 macOS「系统设置 → 隐私与安全性 → 辅助功能」中删除旧的临时签名项，并将**当前** `~/Applications/TunnelSentinelRouteController.app` 重新加入、启用。通过后台无改动读测后才能设置 `codex_auto_failover_enabled=true`。系统隐私数据库绝不由程序直接改写或绕过。注意 UI 控制还依赖 Shadowrocket 已打开并停留在原生分组列表/编辑页；若不可见，程序安全停止，不会假装切换成功。
-
-**2026-10-25 授权校验说明：** macOS 对辅助功能访问会考虑“责任进程”，从 Python 守护程序直接派生的辅助功能子进程并不总继承已签名应用权限。自动恢复控制已改为由 `launchctl submit` 直接启动受限签名原生控制器（85 项原回归扩充至 **87 项测试**），不使用 Python 代理其他 App 的许可。用户先前批准的同名项目可能是旧二进制的路径授权：Apple 官方 `tccutil reset Accessibility com.wuwendi.tunnelsentinel.routecontroller` 成功后，系统设置中同名蓝色条目仍存在。若后台显示 `ACCESSIBILITY=required`，请在「辅助功能」中移除旧条目，重新选择 **整个** `~/Applications/TunnelSentinelRouteController.app` 应用包并启用，而非包内可执行文件。确认后台两个标志为 `granted` 后再开启业务自动切换；不要绕过 TCC 或为了此功能给 Python/Node 开放额外权限。
+菜单栏使用原生 macOS 菜单材质，顶部信息卡不再单独绘制不透明 `.windowBackgroundColor`，避免上下色差和右侧留白。主 App 在启用原生 fallback 时直接使用 Guardian 的全局节点状态，不重复读取 Shadowrocket 受保护的 App Group 偏好，避免无必要的“访问其他 App 数据”权限请求。2026-10-25 实机深色菜单截图已核对；浅色外观仍需后续人工验收。

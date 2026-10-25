@@ -29,7 +29,7 @@ from urllib.parse import urlencode, urlparse
 
 
 APP_NAME = "OpenAILinkGuardian"
-VERSION = "1.5.4"
+VERSION = "1.5.5"
 DEFAULT_HOME = Path.home() / "Library" / "Application Support" / APP_NAME
 DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 DEFAULT_STATUS = DEFAULT_HOME / "status.json"
@@ -70,6 +70,7 @@ DEFAULTS = {
     "endpoint_method_audit_enabled": False,
     # The user explicitly enabled native proxy logging for the requested
     # ChatGPT node identity feature. Never toggle logging on their behalf.
+    "codex_stream_sqlite_monitor_enabled": False,
     "native_proxy_log_reader_enabled": False,
     "native_proxy_log_reader_interval_seconds": 40,
     "native_proxy_node_recent_seconds": 600,
@@ -632,6 +633,10 @@ class Guardian:
         self.ai_matrix_checked_at = 0.0
         self.ai_matrix_checks: list[dict] = []
         self.endpoint_method_audit: dict = {}
+        self.codex_stream_lock = threading.Lock()
+        self.codex_stream_last_run = 0.0
+        self.codex_stream_running = False
+        self.codex_stream_result: dict = {}
         self.native_log_lock = threading.Lock()
         self.native_log_last_run_at = 0.0
         self.native_log_running = False
@@ -676,6 +681,35 @@ class Guardian:
             nodes[0] if nodes else None
         )
         self.current_node_verified = observed_node is not None
+
+    def _codex_stream_worker(self) -> None:
+        helper = DEFAULT_HOME / "codex_stream_health.py"
+        result = {"state":"unavailable","source":"codex_read_only_sqlite"}
+        try:
+            proc = subprocess.run([sys.executable, str(helper)],
+                                  capture_output=True,text=True,check=False,timeout=2.5)
+            if proc.returncode == 0:
+                parsed = json.loads(proc.stdout)
+                if parsed.get("source") == "codex_read_only_sqlite":
+                    result = parsed
+        except (OSError,TypeError,ValueError,subprocess.SubprocessError):
+            pass
+        finally:
+            with self.codex_stream_lock:
+                self.codex_stream_result = result
+                self.codex_stream_running = False
+
+    def maybe_begin_codex_stream(self) -> None:
+        if not self.config.get("codex_stream_sqlite_monitor_enabled",False):
+            return
+        now=time.monotonic()
+        with self.codex_stream_lock:
+            if self.codex_stream_running or now-self.codex_stream_last_run<45:
+                return
+            self.codex_stream_running=True
+            self.codex_stream_last_run=now
+        threading.Thread(target=self._codex_stream_worker,daemon=True,
+                         name="CodexStreamHealthObserver").start()
 
     def _native_proxy_log_worker(self) -> None:
         # The guard process NEVER opens the protected Shadowrocket directory.
@@ -1077,6 +1111,20 @@ class Guardian:
         tunnel_stop_reason: str = "none",
     ) -> None:
         issues = self.log_watcher.issue_summary()
+        with self.codex_stream_lock:
+            stream_info = dict(self.codex_stream_result)
+        counts = stream_info.get("counts") or {}
+        stream_count = sum(int(counts.get(k,0)) for k in
+                           ("broken_pipe","websocket_handshake","connection_reset"))
+        last_error = int(stream_info.get("last_at",0))
+        # Inform about failed authenticated Codex streaming independently of
+        # public edge availability. NEVER increase the automatic switch score.
+        if (stream_info.get("state")=="ok" and stream_count and
+                0 <= time.time()-last_error <= 1800):
+            issues.append({"category":"codex_stream",
+                           "title":"Codex 近30分钟响应流中断",
+                           "count":stream_count,"last_seen":last_error})
+            issues = sorted(issues,key=lambda x:x["last_seen"],reverse=True)[:6]
         observed = next(
             (result for result in results
              if result.transport_ok and result.http_code == 200 and result.egress_ip),
@@ -1111,6 +1159,8 @@ class Guardian:
             and native.get("group") == self.config.get("native_fallback_group")
         )
         payload = {
+            "codex_stream_diagnostics": stream_info,
+            "codex_stream_sqlite_monitor_enabled": bool(self.config.get("codex_stream_sqlite_monitor_enabled",False)),
             "native_proxy_log_reader_enabled": bool(self.config.get("native_proxy_log_reader_enabled",False)),
             "native_proxy_log_recent": bool(native_recent),
             "native_proxy_log_read_status": native_reader_problem or "ok",
@@ -1291,6 +1341,7 @@ class Guardian:
         self.observe_edge_incident(results, healthy)
         self.maybe_begin_ai_matrix(healthy)
         self.maybe_begin_native_proxy_log()
+        self.maybe_begin_codex_stream()
         log_failures = self.log_watcher.read_new_failures()
         if log_failures:
             self.logger.warning("new ChatGPT network log failures=%d", len(log_failures))

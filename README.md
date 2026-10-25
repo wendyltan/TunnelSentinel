@@ -57,6 +57,12 @@
 
 > **关于 Cloudflare 验证：** 未携带登录态的命令行请求可能正常遇到 HTTP 403。TunnelSentinel 不读取 Cookie、令牌或聊天内容，因此使用公开入口验证基础连通性，并以真实桌面端日志辅助判断业务异常。
 
+## Codex 响应流故障监测（v1.5.5）
+
+TunnelSentinel 还会独立检查 Codex 的原生运行诊断：`~/.codex/logs_2.sqlite`。在显式开启 `codex_stream_sqlite_monitor_enabled` 时，只以只读 SQLite、有限扫描范围和 **2.5 秒子进程超时**统计最近 30 分钟的 Broken pipe、WebSocket 握手失败、Connection reset 次数与最近出现时间；不输出聊天正文、代码、密钥、请求 ID 或原始日志。故障会以 **“Codex 近30分钟响应流中断”** 出现在业务状态中，与公共 URL 可达性独立。
+
+**重要：** v1.5.5 不会因为 Codex 错误直接修改代理或轮换节点。Shadowrocket 原生 `OpenAI-Resilience` fallback 仍按自身测试 URL 选择**第一个可用节点**。在 2026-10-25 15:20–15:45 本机日志中，四个候选均接受周期测试，策略始终选择 Seattle 05；Codex 实际同时出现 Broken pipe、握手失败，说明只测公共入口不能证明流式对话稳定。临时调整路由需在 **Shadowrocket 分组本身**改变优先候选，单独更改全局节点不等于改变 GPT 分组。
+
 ## AI 多站点分流检测
 
 TunnelSentinel 内置参考 [Nexitally AI 分流测试](https://nxonearth.com/aitest.html) 的**公共 Trace 观测方法**，在本机经过现有 Shadowrocket 代理，低频检查 ChatGPT、OpenAI、Sora、Claude、Grok、Anthropic、Perplexity 等网站。菜单中的「AI 分流检测」可查看每个目标的可达状态、出口地区及响应耗时。默认测试间隔约 15 分钟，和基础链路检查相互独立，不需要提交订阅链接、账号或聊天内容。

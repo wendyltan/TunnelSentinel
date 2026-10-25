@@ -2,6 +2,10 @@
 
 ## P0 · Proven autonomous recovery (OPEN)
 
+
+- [x] 2026-10-25 v1.5.5：将 Codex 原生 SQLite 的 Broken pipe、WebSocket 握手失败、连接重置接入业务状态（与公共入口健康独立），已通过 69 项回归并实机报告错误；不因流式错误盲目切换。
+- [ ] Codex 流式故障驱动的分组级安全切换：先获得受支持的 Shadowrocket 分组节点控制接口以及候选业务稳定性证据；目前原生 fallback 仍按公共 URL 首个可用选择 Seattle 05，不能用无凭据 HTTP 200 代替真实 Codex 流式运行检查。自然故障观察，不人为断网。
+
 - [x] Stop looping over stale subscription names; use recently successful verified candidates.
 - [x] Shorten degraded detection checks without changing normal network checks.
 - [x] Do not auto-rotate from mere 429/Cloudflare client diagnostics.

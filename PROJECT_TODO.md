@@ -61,3 +61,6 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [ ] P1 从原生可信状态获取自动切换后的 backend 验证，确认后才允许进一步候选排除；若不得已回滚，优先保障基础链接并报告不可验证状态
 
 - [x] 2026-10-25 后台权限分离实测：交互式签名 App 权限检查成功；同一 App 从 GUI LaunchAgent 启动时返回 `ACCESSIBILITY=required EVENT_CONTROL=required`。支持无 UI 的 `--check-permissions`。
+
+- [ ] **2026-10-25 17:17 授权后验收仍未过关**：交互式权限已变成 granted；独立 `--probe` 依旧焦点丢失/8秒超时；全量 AX 属性查询仍不稳定。现有 GUI 控制器不能在后台安全修改分组。需要打开 `OpenAI-Resilience` **编辑页**进行只读、定时验收，不能直接开启 `codex_auto_failover_enabled`。
+- [x] 控制器源代码取消剪贴板读取和写入，使用辅助功能 `AXFocusedUIElement / AXValue` 读写并设置消息超时（源码已编译，但因尚未完成真实 UI 验收未部署签名 App）。

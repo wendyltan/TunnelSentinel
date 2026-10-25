@@ -43,18 +43,42 @@ func findWindow(_ pid: pid_t) throws -> CGRect {
 func focusGuard() throws {
     guard applicationIsFront() else { throw EditorError.focusLost }
 }
-func cloneClipboard(_ board: NSPasteboard) -> [NSPasteboardItem] {
-    // NSPasteboardItem does not implement NSCopying on macOS 26.
-    // Recreate supported type/data pairs in memory (never persist clipboard).
-    return (board.pasteboardItems ?? []).map { source in
-        let item = NSPasteboardItem()
-        for type in source.types {
-            if let data = source.data(forType:type) {
-                item.setData(data, forType:type)
-            }
-        }
-        return item
-    }
+func focusedField() throws -> AXUIElement {
+    guard applicationIsFront(),
+          let app=NSRunningApplication.runningApplications(
+              withBundleIdentifier:"com.liguangming.Shadowrocket").first
+    else { throw EditorError.focusLost }
+    let target=AXUIElementCreateApplication(app.processIdentifier)
+    AXUIElementSetMessagingTimeout(target,0.7)
+    var focused:CFTypeRef?
+    guard AXUIElementCopyAttributeValue(target,kAXFocusedUIElementAttribute as CFString,&focused) == .success,
+          let value=focused,
+          CFGetTypeID(value) == AXUIElementGetTypeID()
+    else { throw EditorError.unexpectedUI }
+    let element=value as! AXUIElement
+    AXUIElementSetMessagingTimeout(element,0.7)
+    var role:CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element,kAXRoleAttribute as CFString,&role) == .success,
+          let name=role as? String, name=="AXTextField" || name=="AXTextArea"
+    else { throw EditorError.unexpectedUI }
+    return element
+}
+func readFocused() throws -> String {
+    let field=try focusedField()
+    var value:CFTypeRef?
+    guard AXUIElementCopyAttributeValue(field,kAXValueAttribute as CFString,&value) == .success,
+          let string=value as? String
+    else {throw EditorError.unexpectedUI}
+    return string
+}
+func replaceFocused(with content: String) throws {
+    let field=try focusedField()
+    var allowed:DarwinBoolean=false
+    guard AXUIElementIsAttributeSettable(field,kAXValueAttribute as CFString,&allowed) == .success,
+          allowed.boolValue
+    else {throw EditorError.unexpectedUI}
+    guard AXUIElementSetAttributeValue(field,kAXValueAttribute as CFString,content as CFString) == .success
+    else {throw EditorError.failedPaste}
 }
 func activateTarget(_ app: NSRunningApplication) throws {
     for _ in 0..<3 {
@@ -69,11 +93,7 @@ func valid(_ original: String) -> Bool {
     return s.count < 220 && s.hasPrefix("(?I)") && s.contains("JAPAN 14")
 }
 func copyInput() throws -> String {
-    try focusGuard()
-    chord(0) // command A
-    chord(8) // command C
-    pause(0.18)
-    return NSPasteboard.general.string(forType:.string) ?? ""
+    try readFocused()
 }
 func focusRegex(_ w: CGRect) throws -> String {
     try focusGuard()
@@ -118,14 +138,8 @@ func apply(_ requested: String, expected: String) throws {
     guard let app=NSRunningApplication.runningApplications(withBundleIdentifier:"com.liguangming.Shadowrocket").first
     else {throw EditorError.absent}
     let prev=NSWorkspace.shared.frontmostApplication
-    let pb=NSPasteboard.general
-    let backup=cloneClipboard(pb)
     defer {
-        pb.clearContents()
-        if !backup.isEmpty { _ = pb.writeObjects(backup) }
-        if let prev=prev,prev.bundleIdentifier != "com.liguangming.Shadowrocket" {
-           prev.activate()
-        }
+        if let old=prev,old.bundleIdentifier != "com.liguangming.Shadowrocket" { old.activate() }
     }
     for _ in 0..<5 {
         app.activate()
@@ -143,12 +157,9 @@ func apply(_ requested: String, expected: String) throws {
     // or a different automated phase.
     guard normalize(original) == normalize(expected)
     else {throw EditorError.unexpectedUI}
-    // One named group only. Clipboard proof checks the field has a group REGEX,
-    // not the group NAME nor another text field.
-    pb.clearContents()
-    pb.setString(requested,forType:.string)
+    // Write only the focused AXTextField; never touch clipboard contents.
     try focusGuard()
-    chord(9) // cmd V
+    try replaceFocused(with:requested)
     pause(0.2)
     let verified=try copyInput()
     guard verified == requested else {throw EditorError.failedPaste}
@@ -172,12 +183,8 @@ func probe() throws {
     guard let app=NSRunningApplication.runningApplications(withBundleIdentifier:"com.liguangming.Shadowrocket").first
     else {throw EditorError.absent}
     let previous=NSWorkspace.shared.frontmostApplication
-    let pb=NSPasteboard.general
-    let backup=cloneClipboard(pb)
     defer {
-        pb.clearContents()
-        if !backup.isEmpty { _ = pb.writeObjects(backup) }
-        if let a=previous,a.bundleIdentifier != "com.liguangming.Shadowrocket" {a.activate()}
+        if let old=previous,old.bundleIdentifier != "com.liguangming.Shadowrocket" {old.activate()}
     }
     try activateTarget(app)
     try focusGuard()

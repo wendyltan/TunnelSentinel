@@ -16,7 +16,8 @@ final class IntegratedRecovery {
         let info:[String:String]=[
             "authorization_required":"需授权 TunnelSentinel",
             "ready_disabled":"关闭","armed":"待命",
-            "recovered":"已切换并确认","switching":"切换验证中",
+            "limited":"监测中 · 切换受限",
+            "recovered":"分组节点已变 · 业务待验","switching":"切换验证中",
             "verifying":"验证中","blocked":"暂停（需检查）",
             "paused":"暂停","rolled_back":"已回滚"
         ]
@@ -169,8 +170,15 @@ final class IntegratedRecovery {
         guard (0...90).contains(now-scan),
               (0...210).contains(now-last),last>n(state["last_trigger_at"]),
               count>=3 else {
-            let observed = IntegratedGroupController.currentNode() ?? ""
-            reported("armed",reason:"监测中（需210秒内至少3次流故障）",node:observed,armed:true)
+            // Monitoring readiness and switching readiness are distinct:
+            // codex_stream is readable, but the group editor can be invisible
+            // when the Shadowrocket configuration page is closed or locked.
+            // Fail closed, and never advertise "armed" as a writable route.
+            if let observed = IntegratedGroupController.currentNode() {
+                reported("armed",reason:"故障监测及原生分组读取正常",node:observed,armed:true)
+            } else {
+                reported("limited",reason:"故障监测正常；Shadowrocket 分组不可读取，暂无法保证自动切换",armed:true)
+            }
             return
         }
         guard now-n(state["last_attempt_at"])>=600,

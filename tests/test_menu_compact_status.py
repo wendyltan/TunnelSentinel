@@ -34,8 +34,10 @@ class MenuCompactStatusTests(unittest.TestCase):
         self.assertNotIn('snapshot.userLastVerifiedNode',card)
 
     def test_background_ax_read_is_read_only_and_fail_closed(self):
-        self.assertIn('let observed = IntegratedGroupController.currentNode() ?? ""', recovery)
+        self.assertIn('if let observed = IntegratedGroupController.currentNode()', recovery)
         self.assertIn('node:observed,armed:true',recovery)
+        self.assertIn('reported("limited",reason:',recovery)
+        self.assertIn('"limited":"监测中 · 切换受限"',recovery)
         self.assertIn('(0...105).contains(Int(Date().timeIntervalSince1970) - observed)',menu)
 
 if __name__ == '__main__': unittest.main()

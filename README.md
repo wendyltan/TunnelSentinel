@@ -19,6 +19,14 @@
 
 ---
 
+## v1.6 · 只有一个 TunnelSentinel 应用
+
+2026-10-25 起，**节点故障转移控制器已直接集成进 `TunnelSentinel.app`**，不再需要、也不再安装 `TunnelSentinelRouteController.app`。用户可见的唯一应用是 `~/Applications/TunnelSentinel.app`；内部 Python Guardian 仅负责后台日志采集和基础探测，不再请求其他应用的辅助功能权限。原独立自动换线 LaunchAgent 已停用并从启动项移走，旧辅助 App 仅保留在不对用户展示的诊断备份中。
+
+菜单栏提供 **「节点故障转移 · 状态」** 与 **「开启／关闭 Codex 自动故障转移」**。第一次启用可能需要 macOS 系统设置 → 隐私与安全性 → 辅助功能 → **TunnelSentinel** 授权；不要授权 Python 或旧 Route Controller。此权限只能由用户批准。原应用使用稳定 Apple Development 签名，减少更新后失效的可能性。
+
+监测来自 Guardian 的 Codex 最近 210 秒真实流式故障，3 次及以上才符合切换条件。由 TunnelSentinel Swift 进程使用 Shadowrocket 的原生辅助功能界面读取当时实际使用的 `OpenAI-Resilience` 节点、排除故障候选、保存并回读，之后观察实际组内节点是否改变。每次至少保留两台候选、10 分钟冷却、最多两次排除、单次失败停止升级，基础公共入口故障时尝试一次回滚。**截至当前尚未通过自然故障下的完整业务恢复验收**，不要将编译或单格保存测试视为恢复必然成功；当 Shadowrocket 页面不可访问、macOS 未授权或屏幕锁定时，控制器会安全退出并显示阻塞，不会假报换线成功。已有连接不会因测试被强制断开。
+
 ## 看得见问题，才谈得上恢复
 
 **公共入口能打开，不等于 ChatGPT 一定好用。** TunnelSentinel 把代理基础连通性和桌面客户端业务异常分开检测：即使网络入口返回 HTTP 200，客户端出现 Cloudflare 验证、429 限流或连接关闭时，面板也能给出不同的提示。

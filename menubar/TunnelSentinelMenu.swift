@@ -138,6 +138,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         statusItem.button?.toolTip = "TunnelSentinel · Shadowrocket / ChatGPT"
         refreshStatus()
         refreshNode()
+        // In-process auto-recovery: no second App, no external AX helper.
+        IntegratedRecovery.shared.start()
         // Status file is produced on a 30-second cycle; node changes are independent.
         statusTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshStatus() }
@@ -665,7 +667,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             headline, detail, liveNode ?? "", snapshot.checkedNode, snapshot.checkedAt,
             String(snapshot.fresh), String(snapshot.networkHealthy),
             String(guardianRunning), String(guardianPaused), String(nodeUnverified),
-            statusLabel, menuBarStateMarker,
+            statusLabel, menuBarStateMarker, IntegratedRecovery.shared.summary,
             String(snapshot.egressObserved), snapshot.egressIP,
             snapshot.egressCountry, snapshot.egressColo,
             snapshot.actualBackendName, String(snapshot.backendVerified),
@@ -708,6 +710,13 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem(aiMatrixSummary, symbol: "globe.americas",
                               action: #selector(showAIMatrix)))
         menu.addItem(menuItem("查看 GPT 节点状态与事件", symbol: "list.bullet.rectangle", action: #selector(openLog)))
+        let recovery = IntegratedRecovery.shared.summary
+        menu.addItem(menuItem("节点故障转移 · \(recovery)", symbol: "arrow.triangle.2.circlepath",
+                              action: #selector(openRecoverySettings)))
+        let autoSwitchOn = recoveryEnabled()
+        menu.addItem(menuItem(autoSwitchOn ? "关闭 Codex 自动故障转移" : "开启 Codex 自动故障转移",
+                              symbol: autoSwitchOn ? "pause.circle" : "play.circle",
+                              action: #selector(toggleRecovery)))
         if recoveryBlocked || !snapshot.networkHealthy {
             menu.addItem(menuItem("打开 Shadowrocket 手动处理", symbol: "network",
                                   action: #selector(openShadowrocket)))
@@ -984,6 +993,48 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    private func recoveryEnabled() -> Bool {
+        let path = base.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return json["codex_auto_failover_enabled"] as? Bool == true
+    }
+
+    @objc private func toggleRecovery() {
+        let path = base.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: path),
+              var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+        let newValue = !(json["codex_auto_failover_enabled"] as? Bool == true)
+        if newValue && !AXIsProcessTrusted() {
+            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt":true] as CFDictionary)
+            let notice = NSAlert()
+            notice.messageText = "请只授权 TunnelSentinel"
+            notice.informativeText = "节点切换功能已合并到 TunnelSentinel。请在 macOS「隐私与安全性 → 辅助功能」中允许 TunnelSentinel；无需再授权 Route Controller 或 Python。"
+            notice.addButton(withTitle: "打开系统设置")
+            notice.addButton(withTitle: "稍后")
+            if notice.runModal() == .alertFirstButtonReturn {
+                openRecoverySettings()
+            }
+            return
+        }
+        json["codex_auto_failover_enabled"] = newValue
+        json["codex_auto_preflight_enabled"] = false
+        guard let updated = try? JSONSerialization.data(withJSONObject:json,options:[.prettyPrinted,.sortedKeys])
+        else { return }
+        do {
+            try updated.write(to:path,options:.atomic)
+            IntegratedRecovery.shared.tick()
+            self.lastRenderedState = ""
+            self.rebuildMenu()
+        } catch { showError("配置保存失败，自动切换状态未改变") }
+    }
+
+    @objc private func openRecoverySettings() {
+        let url=URL(string:"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+        NSWorkspace.shared.open(url)
+    }
     @objc private func quitMenu() { NSApplication.shared.terminate(nil) }
 }
 

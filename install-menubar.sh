@@ -15,8 +15,11 @@ trap '/bin/rm -rf "$build_dir"' EXIT
 staged_app="$build_dir/TunnelSentinel.app"
 mkdir -p "$staged_app/Contents/MacOS" "$staged_app/Contents/Resources"
 
-/usr/bin/swiftc -parse-as-library -O -framework AppKit \
-    "$project_dir/menubar/TunnelSentinelMenu.swift" -o "$staged_app/Contents/MacOS/TunnelSentinelMenu"
+/usr/bin/swiftc -parse-as-library -O -framework AppKit -framework ApplicationServices \
+    "$project_dir/menubar/TunnelSentinelMenu.swift" \
+    "$project_dir/menubar/TunnelSentinelNativeRoute.swift" \
+    "$project_dir/menubar/TunnelSentinelRecovery.swift" \
+    -o "$staged_app/Contents/MacOS/TunnelSentinelMenu"
 /bin/cp "$project_dir/branding/AppIcon.icns" "$staged_app/Contents/Resources/AppIcon.icns"
 /bin/cp "$project_dir/branding/MenuBarTemplate.png" "$staged_app/Contents/Resources/MenuBarTemplate.png"
 
@@ -33,8 +36,8 @@ info={
  "CFBundleName":"TunnelSentinel",
  "CFBundleDisplayName":"TunnelSentinel",
  "CFBundlePackageType":"APPL",
- "CFBundleShortVersionString":"1.5.4",
- "CFBundleVersion":"13",
+ "CFBundleShortVersionString":"1.6.0",
+ "CFBundleVersion":"16",
  "CFBundleIconFile":"AppIcon",
  "LSMinimumSystemVersion":"13.0",
  "LSUIElement":True,
@@ -52,8 +55,15 @@ agent={
 with open(agent_path,"wb") as f: plistlib.dump(agent,f)
 PY
 /usr/bin/plutil -lint "$staged_app/Contents/Info.plist" "$build_dir/agent.plist"
-/usr/bin/codesign --force --sign - "$staged_app"
-/usr/bin/codesign --verify --verbose=2 "$staged_app"
+# Stable signature for the ONE user-facing TunnelSentinel app. Do not create
+# a second app or rely on ad-hoc signatures for macOS Accessibility permission.
+identity="$(security find-identity -v -p codesigning | awk '/Apple Development:/ {print $2;exit}')"
+if [[ -z "$identity" ]]; then
+    echo "No stable Apple Development identity; refusing install" >&2
+    exit 42
+fi
+/usr/bin/codesign --force --sign "$identity" --timestamp=none "$staged_app"
+/usr/bin/codesign --verify --strict "$staged_app"
 
 # Preserve the old LaunchAgent/binary and any prior app before touching live state.
 backup_dir="$install_dir/backups/branding-$(date +%Y%m%d-%H%M%S)"

@@ -1,3 +1,13 @@
+## 最新架构：2026-10-25 · 只保留 TunnelSentinel.app
+
+- [x] 移除独立 `TunnelSentinelRouteController.app` 的用户可见安装（旧版保留备份），停用并移出独立 `tunnelsentinel-autofailover` LaunchAgent
+- [x] `TunnelSentinel.app` v1.6.0 稳定签名；在菜单栏同一 Swift 进程内集成节点 AX 控制与恢复轮询
+- [x] 菜单栏提供节点故障转移状态、开启/关闭入口；Guardian Python 只读 Codex 业务日志，永不作为 AX 守护责任进程
+- [x] 87 项 Python 回归通过；Shadowrocket VPN/规则未被强制切换
+- [ ] **P0 只需授权 TunnelSentinel 一次**：系统设置 → 隐私与安全性 → 辅助功能 → `~/Applications/TunnelSentinel.app`；当前内置自检状态 `authorization_required`
+- [ ] **P0 完整自动恢复实机验收**：自然 Codex broken pipe 达到阈值后，检查 AX 规则持久化、原生组节点切换、真实 Codex 流恢复；不人为断网
+- [ ] P1 Shadowrocket 不在原生代理分组界面或 Mac 屏幕锁定时的无 UI 自动控制能力尚未实现；可靠失败关闭并提醒用户
+
 # TunnelSentinel — outstanding acceptance
 
 ## P0 · Proven autonomous recovery (OPEN)

@@ -169,7 +169,8 @@ final class IntegratedRecovery {
         guard (0...90).contains(now-scan),
               (0...210).contains(now-last),last>n(state["last_trigger_at"]),
               count>=3 else {
-            reported("armed",reason:"监测中（需210秒内至少3次流故障）",armed:true)
+            let observed = IntegratedGroupController.currentNode() ?? ""
+            reported("armed",reason:"监测中（需210秒内至少3次流故障）",node:observed,armed:true)
             return
         }
         guard now-n(state["last_attempt_at"])>=600,

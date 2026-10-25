@@ -38,6 +38,8 @@ private struct Snapshot {
     var backendObservedAt = ""
     var backendLastLoggedName = ""
     var backendLastLoggedAt = ""
+    var nativeGroupUINode = ""
+    var nativeGroupUIObservedAt = 0
     var nativeProxyLogEnabled = false
     var nativeProxyLogRecent = false
     var backendLogHistory: [[String: Any]] = []
@@ -199,6 +201,20 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         next.failures = values["recent_failure_score"] as? Int ?? 0
         next.routeManagement = values["route_management"] as? String ?? "legacy_external_select"
         next.nativeFallbackGroup = values["native_fallback_group"] as? String ?? ""
+        // Native AX evidence is read opportunistically by the same approved
+        // TunnelSentinel.app; never treat old per-request or screenshot data
+        // as the currently selected fallback backend.
+        if let reportData = try? Data(contentsOf: base.appendingPathComponent("auto_route_ui_status.json")),
+           let report = (try? JSONSerialization.jsonObject(with: reportData)) as? [String: Any],
+           report["mode"] as? String == "integrated_app",
+           report["enabled"] as? Bool == true,
+           let observed = report["checked_at"] as? Int,
+           (0...105).contains(Int(Date().timeIntervalSince1970) - observed),
+           let node = report["node"] as? String,
+           ["JAPAN 04", "JAPAN 14", "SEATTLE 05", "SAN JOSE 07"].contains(node) {
+            next.nativeGroupUINode = node
+            next.nativeGroupUIObservedAt = observed
+        }
         next.egressObserved = values["openai_egress_observed"] as? Bool ?? false
         next.egressIP = values["openai_egress_ip"] as? String ?? ""
         next.egressColo = values["openai_egress_colo"] as? String ?? ""
@@ -377,6 +393,11 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return location.isEmpty ? "出口已观测" : location
     }
 
+    private var nativeGroupUIRecent: Bool {
+        snapshot.fresh && !snapshot.nativeGroupUINode.isEmpty &&
+            (0...105).contains(Int(Date().timeIntervalSince1970) - snapshot.nativeGroupUIObservedAt)
+    }
+
     private var backendCompactTitle: String {
         let isRecent = snapshot.fresh && snapshot.backendVerified &&
             !snapshot.actualBackendName.isEmpty
@@ -490,7 +511,10 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     }
 
     private func divider(_ y: CGFloat, in view: NSView) {
-        let line = AppearanceFillView(frame: NSRect(x: 20, y: y, width: 336, height: 1),
+        // AX-verified NSMenu width is exactly the custom card's 340pt width.
+        // Use equal 20pt inset; no speculative additional menu chrome.
+        let line = AppearanceFillView(frame: NSRect(x: 20, y: y,
+                                                   width: view.bounds.width - 40, height: 1),
                                       color: .separatorColor.withAlphaComponent(0.5))
         view.addSubview(line)
     }
@@ -505,7 +529,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     }
 
     private func menuCard() -> NSView {
-        let w: CGFloat = 376
+        let w: CGFloat = 340
         // The native NSMenu owns its vibrancy/material and light/dark appearance.
         // Painting windowBackgroundColor into a fixed-width custom NSMenuItem
         // creates a hard top/bottom color seam and exposes a strip on the right
@@ -515,42 +539,37 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         v.addSubview(label("T U N N E L   S E N T I N E L",
                            font: .systemFont(ofSize: 10, weight: .bold),
                            color: .tertiaryLabelColor,
-                           frame: NSRect(x: 20, y: 290, width: 260, height: 19)))
+                           frame: NSRect(x: 20, y: 290, width: w - 140, height: 19)))
         v.addSubview(badge(statusLabel, color: accent,
-                           frame: NSRect(x: 280, y: 287, width: 78, height: 22)))
+                           frame: NSRect(x: w - 98, y: 287, width: 78, height: 22)))
         v.addSubview(label(headline, font: .systemFont(ofSize: 19, weight: .semibold),
-                           color: .labelColor, frame: NSRect(x: 20, y: 253, width: 336, height: 27)))
+                           color: .labelColor, frame: NSRect(x: 20, y: 253, width: w - 40, height: 27)))
         v.addSubview(label(detail, font: .systemFont(ofSize: 11.5),
-                           color: .secondaryLabelColor, frame: NSRect(x: 20, y: 230, width: 337, height: 19)))
+                           color: .secondaryLabelColor, frame: NSRect(x: 20, y: 230, width: w - 40, height: 19)))
 
-        let nodeBox = AppearanceFillView(frame: NSRect(x: 18, y: 114, width: 340, height: 106),
+        let nodeBox = AppearanceFillView(frame: NSRect(x: 18, y: 114, width: w - 36, height: 106),
                                          color: .controlBackgroundColor, cornerRadius: 10)
-        let backendSource = snapshot.backendVerified && !snapshot.actualBackendName.isEmpty
-            ? "GPT 最近请求节点 · Shadowrocket 原生记录"
-            : "GPT 上次确认节点 · 非实时"
+        let backendSource = snapshot.fresh && snapshot.networkHealthy && snapshot.egressObserved
+            ? "GPT 实测出口 · 周期探测" : "GPT 出口 · 待确认"
         nodeBox.addSubview(label(backendSource,
                                 font: .systemFont(ofSize: 10, weight: .medium),
                                 color: .secondaryLabelColor,
-                                frame: NSRect(x: 12, y: 84, width: 317, height: 15)))
-        let egressTitle = snapshot.backendVerified && !snapshot.actualBackendName.isEmpty
-            ? snapshot.actualBackendName
-            : (!snapshot.backendLastLoggedName.isEmpty
-                ? snapshot.backendLastLoggedName
-                : (!snapshot.userLastVerifiedNode.isEmpty
-                    ? snapshot.userLastVerifiedNode + "（上次）"
-                    : observedEgress))
+                                frame: NSRect(x: 12, y: 84, width: nodeBox.bounds.width - 24, height: 15)))
+        let egressTitle = observedEgress
         nodeBox.addSubview(label(egressTitle,
                                 font: .systemFont(ofSize: 13.5, weight: .semibold),
                                 color: .labelColor,
-                                frame: NSRect(x: 12, y: 57, width: 312, height: 22)))
-        nodeBox.addSubview(label("SHADOWROCKET · 全局手选节点",
+                                frame: NSRect(x: 12, y: 57, width: nodeBox.bounds.width - 24, height: 22)))
+        nodeBox.addSubview(label(nativeGroupUIRecent
+                                ? "GPT 分组节点 · 最近原生界面读取"
+                                : "GPT 分组节点 · 暂无近期读取",
                                 font: .systemFont(ofSize: 10, weight: .medium),
                                 color: .secondaryLabelColor,
-                                frame: NSRect(x: 12, y: 35, width: 312, height: 15)))
-        nodeBox.addSubview(label(globalNode,
+                                frame: NSRect(x: 12, y: 35, width: nodeBox.bounds.width - 24, height: 15)))
+        nodeBox.addSubview(label(nativeGroupUIRecent ? snapshot.nativeGroupUINode : "当前节点未核实 · 可查看详细状态",
                                 font: .systemFont(ofSize: 13.5, weight: .semibold),
                                 color: .labelColor,
-                                frame: NSRect(x: 12, y: 9, width: 312, height: 23)))
+                                frame: NSRect(x: 12, y: 9, width: nodeBox.bounds.width - 24, height: 23)))
         v.addSubview(nodeBox)
 
         divider(105, in: v)
@@ -560,7 +579,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                            frame: NSRect(x: 40, y: 78, width: 126, height: 19)))
         v.addSubview(label(snapshot.fresh && snapshot.networkHealthy ? "公共入口可达" : "待确认 / 不可达",
                            font: .systemFont(ofSize: 11), color: .secondaryLabelColor,
-                           frame: NSRect(x: 176, y: 78, width: 180, height: 19), alignment: .right))
+                           frame: NSRect(x: 164, y: 78, width: w - 184, height: 19), alignment: .right))
 
         let issueText: String
         if !snapshot.fresh {
@@ -575,7 +594,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         v.addSubview(label("客户端诊断", font: .systemFont(ofSize: 12, weight: .medium),
                            color: .labelColor, frame: NSRect(x: 40, y: 54, width: 105, height: 19)))
         v.addSubview(label(issueText, font: .systemFont(ofSize: 10.5), color: .secondaryLabelColor,
-                           frame: NSRect(x: 139, y: 54, width: 217, height: 19), alignment: .right))
+                           frame: NSRect(x: 139, y: 54, width: w - 159, height: 19), alignment: .right))
 
         divider(43, in: v)
         let timeText = snapshot.checkedAt.count >= 19
@@ -585,7 +604,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             : " · 节点读取受系统权限约束"
         v.addSubview(label("最近检测 \(timeText)\(recoveryText)",
                            font: .systemFont(ofSize: 10), color: .tertiaryLabelColor,
-                           frame: NSRect(x: 20, y: 17, width: 334, height: 18)))
+                           frame: NSRect(x: 20, y: 17, width: w - 40, height: 18)))
         return v
     }
 
@@ -677,6 +696,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             String(snapshot.fresh), String(snapshot.networkHealthy),
             String(guardianRunning), String(guardianPaused), String(nodeUnverified),
             statusLabel, menuBarStateMarker, IntegratedRecovery.shared.summary,
+            snapshot.nativeGroupUINode, String(snapshot.nativeGroupUIObservedAt),
             String(snapshot.egressObserved), snapshot.egressIP,
             snapshot.egressCountry, snapshot.egressColo,
             snapshot.actualBackendName, String(snapshot.backendVerified),
@@ -700,11 +720,15 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         guard fingerprint != lastRenderedState else { return }
         lastRenderedState = fingerprint
         // Allow macOS to choose dark/light contrast for both glyph and label.
-        statusItem.button?.title = snapshot.routeManagement == "native_fallback"
-            ? "\(menuBarStateMarker) \(statusLabel) · GPT \(backendCompactTitle) · 全 \(compactGlobalNode)"
-            : "\(menuBarStateMarker) \(statusLabel) · 全 \(compactGlobalNode)"
+        // Keep the permanent menu bar compact; never pin a stale provider
+        // node or unrelated global Shadowrocket selection next to the clock.
+        let compactEdge = snapshot.fresh && snapshot.networkHealthy && snapshot.egressObserved
+            && !snapshot.egressCountry.isEmpty ? " · GPT \(shortEgress)" : ""
+        statusItem.button?.title = "\(menuBarStateMarker) \(statusLabel)\(compactEdge)"
         statusItem.button?.contentTintColor = nil
-        let selectedDescription = snapshot.fresh && snapshot.backendVerified
+        let selectedDescription = nativeGroupUIRecent
+            ? "Shadowrocket 分组界面近期选中：\(snapshot.nativeGroupUINode)（仅代表界面读数）"
+            : snapshot.fresh && snapshot.backendVerified
             ? "GPT 最近请求实际节点：\(snapshot.actualBackendName)（\(snapshot.backendObservedAt)）"
             : "GPT 当前节点尚未核实；上次请求记录或截图：\(snapshot.backendLastLoggedName.isEmpty ? snapshot.userLastVerifiedNode : snapshot.backendLastLoggedName)（\(snapshot.backendLastLoggedAt.isEmpty ? snapshot.userLastVerifiedDate : snapshot.backendLastLoggedAt)）"
         statusItem.button?.toolTip = "TunnelSentinel · \(statusLabel)\n\(headline)\n\(selectedDescription)\nOpenAI 公共出口：\(observedEgress)\n全局节点：\(globalNode)\n\(detail)"
@@ -819,7 +843,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     private func nodeEvidenceText() -> String {
         let group = snapshot.nativeFallbackGroup.isEmpty ? "未配置" : snapshot.nativeFallbackGroup
         let backend: String
-        if snapshot.fresh && snapshot.backendVerified && !snapshot.actualBackendName.isEmpty {
+        if nativeGroupUIRecent {
+            backend = "\(snapshot.nativeGroupUINode)（近45秒内 Shadowrocket 组内界面读数，非请求日志）"
+        } else if snapshot.fresh && snapshot.backendVerified && !snapshot.actualBackendName.isEmpty {
             backend = "\(snapshot.actualBackendName)（最近 GPT 请求：\(snapshot.backendObservedAt)，原生记录）"
         } else {
             backend = "当前节点未核实（近期没有新的 GPT 原生代理请求日志）"

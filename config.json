@@ -30,5 +30,6 @@
   "native_proxy_log_reader_interval_seconds": 40,
   "native_proxy_node_recent_seconds": 600,
   "codex_stream_sqlite_monitor_enabled": false,
-  "codex_auto_failover_enabled": false
+  "codex_auto_failover_enabled": false,
+  "codex_auto_preflight_enabled": false
 }

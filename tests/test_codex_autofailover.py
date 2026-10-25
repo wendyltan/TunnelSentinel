@@ -7,146 +7,190 @@ import unittest
 from unittest import mock
 
 ROOT=Path(__file__).resolve().parents[1]
-SPEC=importlib.util.spec_from_file_location("codex_autofailover",ROOT/"scripts/codex_autofailover.py")
-route=importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(route)
+spec=importlib.util.spec_from_file_location("codex_autofailover",ROOT/"scripts/codex_autofailover.py")
+route=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(route)
 
-class CodexAutoFailoverTests(unittest.TestCase):
-    def snapshot(self,now, count=4,latest_offset=3, healthy=True):
-        return {"route_management":"native_fallback",
-                "native_fallback_group":"OpenAI-Resilience","healthy":healthy,
-                "codex_stream_diagnostics":{"state":"ok","counts":{
-                    "broken_pipe":count,"websocket_handshake":0,"connection_reset":0},
-                    "last_at":now-latest_offset,
-                    "scan_at":now,
-                    "recent_counts":{"broken_pipe":count,
-                                     "websocket_handshake":0,
-                                     "connection_reset":0}}}
-    def test_recent_repeated_broken_pipe_qualifies(self):
+class AutoRecoveryTests(unittest.TestCase):
+    def snapshot(self,now,failures=4,lag=4,healthy=True):
+        return {
+            "healthy":healthy,"route_management":"native_fallback",
+            "native_fallback_group":"OpenAI-Resilience",
+            "codex_stream_diagnostics":{
+                "state":"ok","scan_at":now,"last_at":now-lag,
+                "recent_counts":{"broken_pipe":failures,"websocket_handshake":0,
+                                 "connection_reset":0},
+            },
+        }
+    def test_original_policy_matches_native_group(self):
+        self.assertEqual(route.ORIGINAL,"(?i)(JAPAN 04|JAPAN 14|SEATTLE 05|SAN JOSE 07)")
+        self.assertEqual(route.rule_for(["JAPAN 14"]),
+            "(?i)(JAPAN 04|SEATTLE 05|SAN JOSE 07)")
+        self.assertEqual(route.rule_for(["JAPAN 14","SEATTLE 05"]),
+            "(?i)(JAPAN 04|SAN JOSE 07)")
+        with self.assertRaises(ValueError):
+            route.rule_for(["JAPAN 14","SEATTLE 05","JAPAN 04"])
+    def test_parse_real_native_ui_node(self):
+        self.assertEqual(route.parse_node("CURRENT_GROUP_NODE 🇯🇵 JAPAN 14"),"JAPAN 14")
+        self.assertEqual(route.parse_node("CURRENT_GROUP_NODE 🇺🇸 USA SEATTLE 05"),"SEATTLE 05")
+        self.assertIsNone(route.parse_node("CURRENT_GROUP_NODE other"))
+        self.assertIsNone(route.parse_node("GLOBAL_NODE 🇯🇵 JAPAN 14"))
+    def test_trigger_strict_window(self):
         now=int(time.time())
-        self.assertEqual(route.decision(self.snapshot(now)["codex_stream_diagnostics"],
-                                        route.default_state(),now),(1,"qualified_stream_failure"))
-    def test_no_change_for_stale_single_or_duplicate_error(self):
-        now=int(time.time())
-        for count,offset in [(1,3),(9,220)]:
-            p,r=route.decision(self.snapshot(now,count,offset)["codex_stream_diagnostics"],
-                               route.default_state(),now)
-            self.assertIsNone(p)
-        st=route.default_state()
-        st["last_trigger_at"]=now-3
-        p,r=route.decision(self.snapshot(now)["codex_stream_diagnostics"],st,now)
-        self.assertEqual(r,"already_handled")
-    def test_old_30min_errors_cannot_trigger_with_one_new_error(self):
-        now=int(time.time())
-        scan=self.snapshot(now,count=9)["codex_stream_diagnostics"]
-        scan["recent_counts"]={"broken_pipe":1,"websocket_handshake":0,"connection_reset":0}
-        step,why=route.decision(scan,route.default_state(),now)
-        self.assertIsNone(step)
-        self.assertEqual(why,"insufficient_errors")
-
-    def test_stale_codex_read_cannot_trigger(self):
-        now=int(time.time())
-        scan=self.snapshot(now)["codex_stream_diagnostics"]
-        scan["scan_at"]=now-200
-        self.assertEqual(route.decision(scan,route.default_state(),now)[1],"stale_codex_scan")
-
-    def test_unverified_transition_prevents_second_exclusion(self):
-        now=int(time.time());state=route.default_state()
-        state["phase"]=1
-        state["status"]="policy_updated_awaiting_backend_evidence"
-        state["last_attempt_at"]=now-3600
-        with mock.patch.object(route.subprocess,"run") as run:
-            result=route.apply_transition(self.snapshot(now),state,now=now)
-            run.assert_not_called()
-        self.assertEqual(result["phase"],1)
-        self.assertEqual(result["reason"],"awaiting_verification_or_explicit_recovery")
-
-    def test_strict_stage_cooldown_and_daily_limit(self):
-        now=int(time.time())
-        st=route.default_state();st["phase"]=1
-        st["last_attempt_at"]=now-15
+        good=self.snapshot(now)
+        self.assertEqual(route.decision(good["codex_stream_diagnostics"],route.default_state(),now),
+                         (True,"qualified_stream_failure"))
+        for num,delay in [(2,2),(9,230)]:
+            p=self.snapshot(now,num,delay)
+            self.assertIsNone(route.decision(p["codex_stream_diagnostics"],route.default_state(),now)[0])
+        p=self.snapshot(now);p["codex_stream_diagnostics"]["scan_at"]=now-1000
+        self.assertEqual(route.decision(p["codex_stream_diagnostics"],route.default_state(),now)[1],
+                         "stale_codex_scan")
+    def test_cooldown_daily_limit_and_two_node_floor(self):
+        now=int(time.time());st=route.default_state()
+        st["last_attempt_at"]=now-60
         self.assertEqual(route.decision(self.snapshot(now)["codex_stream_diagnostics"],st,now)[1],"cooldown")
         st["last_attempt_at"]=0;st["actions_today"]=3
         self.assertEqual(route.decision(self.snapshot(now)["codex_stream_diagnostics"],st,now)[1],"daily_limit")
-        st["actions_today"]=0;st["phase"]=3
-        self.assertEqual(route.decision(self.snapshot(now)["codex_stream_diagnostics"],st,now)[1],"candidates_exhausted")
-    def test_no_global_change_and_backend_unverified(self):
-        now=int(time.time())
-        st=route.default_state()
-        with tempfile.TemporaryDirectory() as d:
-            binary=Path(d)/"helper"
-            binary.write_text("placeholder")
-            with mock.patch.object(route.subprocess,"run",return_value=mock.Mock(returncode=0,stdout="SAVED")) as cmd:
-                result=route.apply_transition(self.snapshot(now),st,exe=binary,now=now)
-            self.assertEqual(result["state"],"policy_updated_awaiting_backend_evidence")
-            self.assertFalse(result["backend_verified"])
-            self.assertEqual(st["phase"],1)
-            command=cmd.call_args.args[0]
-            self.assertEqual(command[1],"--set")
-            self.assertEqual(command[2],route.PHASES[1])
-            self.assertEqual(command[4],route.PHASES[0])
-            self.assertNotIn("shadowrocket://select",str(command))
-            self.assertNotIn("route/proxy",str(command))
-    def test_permission_denial_does_not_advance_phase(self):
+        st["actions_today"]=0;st["excluded"]=["JAPAN 14","SEATTLE 05"]
+        self.assertEqual(route.decision(self.snapshot(now)["codex_stream_diagnostics"],st,now)[1],
+                         "candidate_safety_limit")
+    def test_healthy_probe_never_edit_without_codex_error(self):
         now=int(time.time());st=route.default_state()
-        with tempfile.TemporaryDirectory() as d:
-            binary=Path(d)/"helper";binary.touch()
-            with mock.patch.object(route.subprocess,"run",return_value=mock.Mock(returncode=77)) as cmd:
-                out=route.apply_transition(self.snapshot(now),st,exe=binary,now=now)
-            self.assertEqual(out["state"],"permission_or_ui_blocked")
-            self.assertEqual(st["phase"],0)
-            self.assertEqual(st["actions_today"],0)
-    def test_failed_public_route_rolls_back_one_phase_once(self):
+        with mock.patch.object(route,"current_node") as node, mock.patch.object(route,"run_editor") as editor:
+            out=route.apply_transition(self.snapshot(now,failures=0),st,now=now)
+            node.assert_not_called();editor.assert_not_called()
+        self.assertEqual(out["reason"],"insufficient_errors")
+    def test_real_selected_japan14_is_excluded_not_seattle(self):
         now=int(time.time());st=route.default_state()
-        st["phase"]=1;st["last_transition_at"]=now-20
-        with tempfile.TemporaryDirectory() as d:
-            binary=Path(d)/"helper";binary.touch()
-            with mock.patch.object(route.subprocess,"run",return_value=mock.Mock(returncode=0)) as cmd:
-                out=route.apply_transition(self.snapshot(now,healthy=False),st,exe=binary,now=now)
-            self.assertEqual(out["state"],"rolled_back_after_public_failure")
-            self.assertEqual(st["phase"],0)
-            self.assertEqual(cmd.call_args.args[0][2],route.PHASES[0])
-            out=route.apply_transition(self.snapshot(now,healthy=False),st,exe=binary,now=now+2)
-            self.assertEqual(out["reason"],"public_edge_down")
-
-    def test_disabled_wrong_group_never_executes(self):
+        with mock.patch.object(route,"current_node",return_value=("JAPAN 14","ok")) as node, \
+             mock.patch.object(route,"run_editor",return_value=(True,"saved_and_reopened")) as edit:
+            out=route.apply_transition(self.snapshot(now),st,now=now)
+        self.assertEqual(out["state"],"policy_updated_awaiting_backend_evidence")
+        self.assertEqual(out["excluded_node"],"JAPAN 14")
+        self.assertEqual(st["excluded"],["JAPAN 14"])
+        self.assertEqual(st["previous_node"],"JAPAN 14")
+        self.assertFalse(st["last_backend_verified"])
+        edit.assert_called_once_with(route.rule_for(["JAPAN 14"]),route.ORIGINAL,route.APP)
+    def test_pending_verification_waits_for_different_allowed_node(self):
         now=int(time.time());st=route.default_state()
-        with mock.patch.object(route.subprocess,"run") as runner:
-            p=self.snapshot(now);p["native_fallback_group"]="Other"
-            self.assertEqual(route.apply_transition(p,st,now=now)["state"],"disabled")
-            runner.assert_not_called()
-    def test_explicit_config_gate_is_disabled_by_default(self):
+        st.update(status="policy_updated_awaiting_backend_evidence",excluded=["JAPAN 14"],
+                  phase=1,rule=route.rule_for(["JAPAN 14"]),previous_node="JAPAN 14",
+                  last_transition_at=now-60)
+        with mock.patch.object(route,"current_node",return_value=("JAPAN 14","ok")) as get, \
+             mock.patch.object(route,"run_editor") as edit:
+            out=route.apply_transition(self.snapshot(now),st,now=now)
+            self.assertEqual(out["state"],"policy_updated_awaiting_backend_evidence")
+            edit.assert_not_called()
+        with mock.patch.object(route,"current_node",return_value=("SEATTLE 05","ok")):
+            out=route.apply_transition(self.snapshot(now),st,now=now+1)
+        self.assertEqual(out["state"],"armed")
+        self.assertTrue(st["last_backend_verified"])
+        self.assertEqual(st["selected_node"],"SEATTLE 05")
+    def test_pending_unverified_times_out_without_extra_switch(self):
+        now=int(time.time());st=route.default_state()
+        st.update(status="policy_updated_awaiting_backend_evidence",excluded=["JAPAN 14"],
+                  last_transition_at=now-190)
+        with mock.patch.object(route,"current_node",return_value=(None,"not_visible")), \
+             mock.patch.object(route,"run_editor") as edit:
+            result=route.apply_transition(self.snapshot(now),st,now=now)
+            edit.assert_not_called()
+        self.assertEqual(result["state"],"backend_unverified")
+        with mock.patch.object(route,"run_editor") as edit:
+            result=route.apply_transition(self.snapshot(now),st,now=now+15)
+            edit.assert_not_called()
+        self.assertEqual(result["reason"],"manual_review_required")
+    def test_untrusted_controller_rejected_without_state_advance(self):
+        now=int(time.time());st=route.default_state()
+        with mock.patch.object(route,"current_node",return_value=(None,"group_not_visible_or_access_denied")), \
+             mock.patch.object(route,"run_editor") as edit:
+            result=route.apply_transition(self.snapshot(now),st,now=now)
+            edit.assert_not_called()
+        self.assertEqual(result["state"],"controller_unavailable")
+        self.assertEqual(st["phase"],0)
+    def test_failed_save_disables_repeated_triggers(self):
+        now=int(time.time());st=route.default_state()
+        with mock.patch.object(route,"current_node",return_value=("JAPAN 14","ok")), \
+             mock.patch.object(route,"run_editor",return_value=(False,"save_not_confirmed")):
+            result=route.apply_transition(self.snapshot(now),st,now=now)
+        self.assertEqual(result["state"],"controller_unavailable")
+        self.assertEqual(st["excluded"],[])
+        with mock.patch.object(route,"run_editor") as edit:
+            route.apply_transition(self.snapshot(now),st,now=now+700)
+            edit.assert_not_called()
+    def test_rollback_once_after_public_unhealthy(self):
+        now=int(time.time());st=route.default_state()
+        st.update(status="policy_updated_awaiting_backend_evidence",
+                  excluded=["JAPAN 14"],phase=1,
+                  rule=route.rule_for(["JAPAN 14"]),previous_rule=route.ORIGINAL,
+                  previous_node="JAPAN 14",last_transition_at=now-30)
+        with mock.patch.object(route,"run_editor",return_value=(True,"saved_and_reopened")) as edit:
+            out=route.apply_transition(self.snapshot(now,healthy=False),st,now=now)
+            edit.assert_called_once_with(route.ORIGINAL,route.rule_for(["JAPAN 14"]),route.APP)
+        self.assertEqual(out["state"],"rolled_back_after_public_failure")
+        self.assertEqual(st["excluded"],[])
+        with mock.patch.object(route,"run_editor") as edit:
+            route.apply_transition(self.snapshot(now,healthy=False),st,now=now+1)
+            edit.assert_not_called()
+    def test_invalid_group_or_public_failure_prevents_forward_change(self):
+        now=int(time.time());st=route.default_state()
+        with mock.patch.object(route,"run_editor") as editor:
+            bad=self.snapshot(now);bad["native_fallback_group"]="Other"
+            self.assertEqual(route.apply_transition(bad,st,now=now)["state"],"disabled")
+            self.assertEqual(route.apply_transition(self.snapshot(now,healthy=False),st,now=now)["state"],"suppressed")
+            editor.assert_not_called()
+    def test_explicit_config_gate(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/"config.json"
-            x={"native_fallback_enabled":True,
-               "native_fallback_group":"OpenAI-Resilience",
-               "codex_stream_sqlite_monitor_enabled":True,
-               "codex_auto_failover_enabled":False}
-            p.write_text(json.dumps(x))
+            cfg={"native_fallback_enabled":True,"native_fallback_group":"OpenAI-Resilience",
+                 "codex_stream_sqlite_monitor_enabled":True,"codex_auto_failover_enabled":False}
+            p.write_text(json.dumps(cfg))
             self.assertFalse(route.enabled(p))
-            x["codex_auto_failover_enabled"]=True
-            p.write_text(json.dumps(x))
+            cfg["codex_auto_failover_enabled"]=True
+            p.write_text(json.dumps(cfg))
             self.assertTrue(route.enabled(p))
-            x["native_fallback_group"]="Other"
-            p.write_text(json.dumps(x))
+            cfg["native_fallback_group"]="Other"
+            p.write_text(json.dumps(cfg))
             self.assertFalse(route.enabled(p))
-
-    def test_reentrant_tasks_do_not_overlap_route_edit(self):
+    def test_background_preflight_does_not_attempt_node_changes(self):
         with tempfile.TemporaryDirectory() as d:
-            path=Path(d)/"state.json"
-            with route.nonconcurrent(path) as first:
-                self.assertTrue(first)
-                with route.nonconcurrent(path) as second:
-                    self.assertFalse(second)
-            with route.nonconcurrent(path) as later:
-                self.assertTrue(later)
+            c=Path(d)/"config.json";result=Path(d)/"preflight.json"
+            c.write_text(json.dumps({"codex_auto_preflight_enabled":True}))
+            outcomes=[
+                mock.Mock(returncode=0,stdout="ACCESSIBILITY=granted EVENT_CONTROL=granted"),
+                mock.Mock(returncode=0,stdout="CURRENT_GROUP_NODE 🇯🇵 JAPAN 14"),
+            ]
+            with mock.patch.object(route.subprocess,"run",side_effect=outcomes) as sp:
+                route.background_preflight(c,result,route.APP)
+            report=json.loads(result.read_text())
+            self.assertEqual(report["controller_access"],"granted")
+            self.assertEqual(report["node"],"JAPAN 14")
+            self.assertEqual(report["native_group_ui"],"readable")
+            self.assertEqual(len(sp.call_args_list),2)
+            self.assertTrue(all("--set" not in str(c) for c in sp.call_args_list))
 
-    def test_status_on_disk_contains_no_codex_prompt_or_tokens(self):
+    def test_preflight_disabled_does_not_launch_controller(self):
         with tempfile.TemporaryDirectory() as d:
-            path=Path(d)/"state.json"
+            c=Path(d)/"config.json";o=Path(d)/"out.json"
+            c.write_text(json.dumps({"codex_auto_preflight_enabled":False}))
+            with mock.patch.object(route.subprocess,"run") as sp:
+                self.assertEqual(route.background_preflight(c,o),0)
+                sp.assert_not_called()
+            self.assertFalse(o.exists())
+
+    def test_nonconcurrent_lock_and_privacy(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/"status.json"
             st=route.default_state()
-            st["status"]="permission_or_ui_blocked"
-            route.persist(st,path)
-            data=json.loads(path.read_text())
-            self.assertEqual(data["status"],"permission_or_ui_blocked")
-            self.assertNotIn("prompt",path.read_text().lower())
+            st["selected_node"]="JAPAN 04"
+            with route.single_writer(p) as first:
+                self.assertTrue(first)
+                with route.single_writer(p) as other:
+                    self.assertFalse(other)
+            route.persist(st,p)
+            self.assertEqual(route.load_state(p)["selected_node"],"JAPAN 04")
+            self.assertNotIn("token",p.read_text())
+            self.assertNotIn("prompt",p.read_text())
+
+if __name__=="__main__":
+    unittest.main()

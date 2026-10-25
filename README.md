@@ -233,8 +233,14 @@ swiftc -parse-as-library -O -framework AppKit \
 
 </div>
 
-### Codex 故障自动切换（待 macOS 授权的受控预备版）
+### Codex 流式故障自动恢复（v0.2 控制器；后台授权待验收）
 
-针对 Codex `broken pipe`、WebSocket 握手失败等流式业务故障，现有 `fallback` 虽周期检查 4 个节点，却可能因公共 URL 返回 200 持续选择业务不稳定的 Seattle 05。已增加独立的 `TunnelSentinelRouteController.app` 和 `com.wuwendi.tunnelsentinel-autofailover`：从最近 210 秒 Codex 原生日志识别至少 3 次故障后，**仅修改 `OpenAI-Resilience` 的候选筛选规则**，逐步排除可能异常的节点，保留 Shadowrocket 原生回退和其他候选，不更改全局节点。
+TunnelSentinel 新增独立 `com.wuwendi.tunnelsentinel-autofailover` LaunchAgent（45 秒周期），监测 Codex 原生响应流是否在 **210 秒内累计出现至少 3 次 Broken pipe、WebSocket 握手失败或 Connection reset**。正常情况下，它不会干预 Shadowrocket，故障触发也不修改全局节点、Tailscale 或系统代理。
 
-安全措施：10 分钟冷却、每日最多 3 次前进操作；旧规则/组名校验、提交后重新读取、无法验证时停止升级、基础入口失效时尝试一次回退、后台并发锁。**功能目前已安装但未启用**：`codex_auto_failover_enabled=false`，因为 macOS 不信任专用后台应用执行辅助操作；交互式工具权限不能代表后台进程权限，尚未完成真实切换验收。需要在系统设置的**隐私与安全性 → 辅助功能**中为 `~/Applications/TunnelSentinelRouteController.app` 授权，再进行只读测试，之后才可启用。不要修改 TCC 数据库、重置系统网络或开放全磁盘访问来绕过该限制。
+改造已经可以从 Shadowrocket **原生辅助功能控件**识别 `OpenAI-Resilience` 当前分组后端（2026-10-25 实测显示 Japan 14）、唯一可编辑的候选正则字段与保存按钮，不再通过固定坐标或剪贴板操作。当前分组允许的候选是 Japan 04、Japan 14、Seattle 05、San Jose 07；在确有 Codex 错误时，读取*实际当前节点*后仅排除该节点，其他节点交给 Shadowrocket 原生 fallback；**保留至少两个候选**。控制器校验原始规则、保存后重开同一分组并核对正则，才将规则保存视为通过，后续仍必须观察原生分组是否出现不同的节点。
+
+安全边界：**10 分钟冷却，每日最多 3 次前进操作，一次最多排除 2 个候选**；同一故障去重，受控并发锁；上次修改尚未验证时禁止继续排除；修改后公共入口丢失时仅尝试一次原规则回滚，任何权限、页面、内容不匹配均停止。**这不能保证候选节点已通过真实 Codex 模型交互**；实际恢复仍需要业务连接结果验证。
+
+已在原分组完成一次*不改变候选正则*的保存→关闭→自动重开→回读，耗时约 3.3 秒；全套 **85 项 Python 回归测试通过**。2026-10-25 安装了稳定 Apple Development 签名的 `~/Applications/TunnelSentinelRouteController.app` v0.2.0（固定 Bundle ID），其安全副本已备份。
+
+**注意：自动切换目前保持 `codex_auto_failover_enabled=false`。** 新签名的独立应用通过 macOS LaunchServices 启动时仍报告 `ACCESSIBILITY=required`，即交互式终端权限不能替代应用独立的辅助功能授权。须在 macOS「系统设置 → 隐私与安全性 → 辅助功能」中删除旧的临时签名项，并将**当前** `~/Applications/TunnelSentinelRouteController.app` 重新加入、启用。通过后台无改动读测后才能设置 `codex_auto_failover_enabled=true`。系统隐私数据库绝不由程序直接改写或绕过。注意 UI 控制还依赖 Shadowrocket 已打开并停留在原生分组列表/编辑页；若不可见，程序安全停止，不会假装切换成功。

@@ -64,3 +64,13 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 
 - [ ] **2026-10-25 17:17 授权后验收仍未过关**：交互式权限已变成 granted；独立 `--probe` 依旧焦点丢失/8秒超时；全量 AX 属性查询仍不稳定。现有 GUI 控制器不能在后台安全修改分组。需要打开 `OpenAI-Resilience` **编辑页**进行只读、定时验收，不能直接开启 `codex_auto_failover_enabled`。
 - [x] 控制器源代码取消剪贴板读取和写入，使用辅助功能 `AXFocusedUIElement / AXValue` 读写并设置消息超时（源码已编译，但因尚未完成真实 UI 验收未部署签名 App）。
+
+
+### 2026-10-25 晚间 · 自动恢复最终控制器与签名验收
+- [x] 直接 AX 读取 `OpenAI-Resilience` 原生当前组内节点、筛选规则和保存动作；不使用剪贴板/固定坐标
+- [x] 保存原规则不变→关闭弹窗→自动重新打开→确认已持久化；验证对话业务基本链路仍正常
+- [x] 自动引擎按原生**当前实际节点**排除，最多排除两个节点、保留至少两个候选，10分钟冷却并在旧修改未验证时停止升级
+- [x] 完成 85 项回归，新增后台预检“不写配置”测试；稳定 Apple Development 签名的控制器 0.2.0 已安装
+- [ ] **系统授权（仅用户可做）**：现存辅助功能开关仍对应旧临时签名版，LaunchServices 启动签名新版报告 ACCESSIBILITY=required；必须为当前 `~/Applications/TunnelSentinelRouteController.app` 重新授权
+- [ ] **P0 后台真正启用**：授权后在 LaunchAgent 身份完成无写权限读测，再启用 `codex_auto_failover_enabled`，自然故障时验证新节点实际生效，跟踪 Codex 流式稳定性
+- [ ] **P1 强化无需前台界面场景**：当前原生辅助功能控制依赖 Shadowrocket 原生分组列表/编辑页，切到其他页面或锁屏时不能保证自动编辑，需支持受限导航或其他官方接口，绝不可假报恢复

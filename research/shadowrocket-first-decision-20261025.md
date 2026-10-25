@@ -1,0 +1,28 @@
+# 2026-10-25 Shadowrocket-first decision, no secondary proxy
+
+## User decision and architecture boundary
+
+TunnelSentinel remains a **network monitor**, and Shadowrocket 2.2.92 remains the sole actual proxy/VPN tunnel. Do not embed, run or separately install Mihomo as a second proxy under TunnelSentinel. This choice does NOT rule out a future **user-chosen replacement** proxy client: if Shadowrocket's unattended API is an unacceptable limitation, Clash Verge Rev is a plausible alternative proxy *application*, and TunnelSentinel would monitor that app with its documented API instead.
+
+## Confirmed Shadowrocket capabilities and limitations
+
+- The maintained public LOWERTOP Shadowrocket wiki documents subscription binding + `policy-regex-filter` in proxy groups, group types `fallback`, `url-test`, `load-balance`, `random`, testing `interval`, `timeout`, `tolerance`, and URL schemes `shadowrocket://connect`, `connectivity-test`, `select?s=...`, `update-subs`. Source: https://github.com/LOWERTOP/Shadowrocket/wiki (community-maintained manual, not a proven stable headless group API contract).
+- No published URL scheme was found for **read current named policy group / set one group's active node**. `shadowrocket://select?s=...` targets global selection, NOT the OpenAI-Resilience group. No AppleScript dictionary (`sdef` returned error -192). Therefore we cannot responsibly promise fully unattended Codex-triggered group changes while Shadowrocket is off the relevant UI page/locked.
+- Active group is subscription-bound `OpenAI-Resilience` with four-name filter `(JAPAN 04|JAPAN 14|SEATTLE 05|SAN JOSE 07)`, native fallback testing previously confirmed interval=60s, timeout=5s, test URL `https://chatgpt.com/cdn-cgi/trace`. Mac's globally selected delay-test method was TCP; it DOES NOT prove the method used for automatic fallback group HTTP health checks.
+- Current-route read-only checks on 2026-10-25, no cookies/tokens, no changes: `GET trace=200`, `HEAD trace=403`, `GET robots.txt=200`, `HEAD robots.txt=200`. HEAD 403 makes the current URL potentially false-negative **only if native automatic fallback uses HEAD**. Do not silently replace with `robots.txt` because HTTP 200 on a static file does not mean Codex streaming works.
+- TunnelSentinel can watch public GPT edge and Codex streams without permissions; the GUI AX adapter is opportunistic, protected logs continuous reading is OFF (TCC privacy). Keep the distinction between `public_edge`, `native_group_UI_selection`, `native_per_request_route`, and `codex_business_success`.
+
+## Shadowrocket-first executable next steps
+
+1. First inspect via Shadowrocket UI (read-only) the active group membership/subscription binding, regex and background test URL/method, group `interval=60s` and `timeout=5s`; compare to earlier configuration. Do not change fields or run a manual node test in active production without controlled impact review.
+2. Use a **not-active configuration copy** for native A/B of `trace` vs HEAD-friendly `robots.txt`; verify whether the *background group tester* uses GET/HEAD/TCP using supported logs/vendor evidence. Do not infer from the terminal curl route, a manual latency test, or a Cloudflare challenge alone. Do not activate test copy while busy.
+3. Change group candidate selection only after measuring current provider list and eligibility. Prefer a *subscription-bound broader region/label filter* or vetted eligible candidates, rather than four immutable strings. Do not expand to all unknown proxies, do not import a different subscription implicitly, and keep >=2 usable candidates.
+4. Keep Shadowrocket's native fallback in charge of ordinary transport faults. TunnelSentinel can surface confirmed Codex session errors, but any business-triggered group adjustment must only occur when the native group is accessible and its identity/rule validated; otherwise explicitly say '监测中 · 切换受限'.
+5. If user wants more consistent background node evidence, research an **explicitly authorized scoped read-only** source (e.g., native per-request logs) with allowlisted OpenAI hostnames and exact matched group. No direct protected App Group scraping, TCC bypass or per-request raw URL retention. Log-off remains the default.
+6. Review at least one **natural** failure incident with evidence of last known native selected node, group tests, observed GPT egress, Codex stream errors, and subsequent successful stream. Do not induce outage/modify live routing solely to make a test green.
+
+## Alternative only if Shadowrocket's limitations remain unacceptable
+
+**Clash Verge Rev** is a complete replacement macOS proxy client with GUI, NOT a core embedded in TunnelSentinel. It bundles Mihomo; its External Controller is separately opt-in (often IPC only by default). Upstream maintainers note an external controller must be enabled explicitly and scripting isn't supported by their GUI workflow; use at your own risk. Official Mihomo API can `GET /proxies/<group>` (`now`, `all`), `PUT /proxies/<group>` to select, `GET /providers/proxies`, and per-node health checks. Documentation: https://wiki.metacubex.one/en/api/ ; https://github.com/clash-verge-rev/clash-verge-rev/discussions/6951 ; latest tagged release as of check 2026-10-25: v2.5.8 on 2026-10-09 at https://github.com/clash-verge-rev/clash-verge-rev/releases .
+
+**Migration is not approved**. It requires the user's intentional client change and tested subscription format, domain rules, TUN and Tailscale behavior, local API loopback+secret, and rollback to Shadowrocket. Two active competing TUN/VPN instances are not acceptable. There is no need to install any alternative simply to complete this research.

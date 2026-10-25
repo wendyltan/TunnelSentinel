@@ -74,3 +74,5 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [ ] **系统授权（仅用户可做）**：现存辅助功能开关仍对应旧临时签名版，LaunchServices 启动签名新版报告 ACCESSIBILITY=required；必须为当前 `~/Applications/TunnelSentinelRouteController.app` 重新授权
 - [ ] **P0 后台真正启用**：授权后在 LaunchAgent 身份完成无写权限读测，再启用 `codex_auto_failover_enabled`，自然故障时验证新节点实际生效，跟踪 Codex 流式稳定性
 - [ ] **P1 强化无需前台界面场景**：当前原生辅助功能控制依赖 Shadowrocket 原生分组列表/编辑页，切到其他页面或锁屏时不能保证自动编辑，需支持受限导航或其他官方接口，绝不可假报恢复
+
+- [ ] **真实 macOS TCC 归因问题（2026-10-25 18:48）**：后台 Python → 已签名原生控制器会把辅助功能请求归因给责任进程 Python3（不能为了此功能给整个 Python 扩权）。直由 launchd 启动控制器时系统正确识别签名 Bundle ID，但仍显示 `authValue=0`；系统弹出 TunnelSentinelRouteController 辅助功能申请提示，尽管设置页同名开关呈蓝色。需要用户在弹窗选择「打开系统设置」，对**当前**已签名 App 的开关关闭再开启，确认真后台 `granted`。若通过，优先改为由原生 signed controller 直接拥有后台辅助操作，而非由 Python 子进程发起。

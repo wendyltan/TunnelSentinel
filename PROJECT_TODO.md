@@ -136,3 +136,12 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [x] 5 秒状态刷新保持监控中心当前滚动位置；标签切换恢复顶部
 - [x] Mac 实际打开各 UI 标签截屏，并通过 Python 回归与 Swift typecheck
 - [ ] 尚未完整验收的功能仍包括锁屏原生节点探测、订阅迁移、已登录的 Computer Use 实际网页操作；不可用功能继续保持不可操作
+
+### 2026-10-26 21:07 · 设置响应性和探测协议
+- [x] NSSwitch 配置更新改后台、限时重载，杜绝等待 launchctl 阻塞 AppKit 主线程
+- [x] 开关显示从配置实时读取，防止 Guardian 状态延迟导致“回弹”；保存过程中拦截重复提交
+- [x] 官方 ChatGPT 与 Codex WebSocket 目的地域名分别测试，展示实际模拟 HTTP GET / Upgrade 方法
+- [x] WebSocket 只有 HTTP 101 为真正握手成功；403/404/421 属于 HTTP 有响应、业务升级未验
+- [x] 显示请求层级：公开 GET / 根路径不等于已登录业务 API，请勿混淆 TLS 探测与真实 Computer Use
+- [ ] 需用户在正常工作时观察下一次 NSSwitch 实际点击体验；本轮不为模拟卡顿故意反复开关隧道重连
+- [ ] 需后续有获授权的业务级测试证据才能标记实际 Codex 长流、Computer Use 为成功

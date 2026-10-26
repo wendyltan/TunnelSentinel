@@ -7,7 +7,6 @@ or records raw URLs, IP addresses, headers, cookies, or response bodies.
 from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import json
-import re
 import subprocess
 import sys
 import time
@@ -17,13 +16,17 @@ from urllib.parse import urlparse
 TARGETS = (
     ('chatgpt_edge','https://chatgpt.com/cdn-cgi/trace','http200'),
     ('chatgpt_websocket','https://ws.chatgpt.com/','wss_handshake'),
+    ('codex_websocket','https://chatgpt.com/','wss_handshake'),
     ('openai_api_tls','https://api.openai.com/','tls_only'),
     ('openai_auth_tls','https://auth.openai.com/','tls_only'),
     ('chatgpt_desktop_tls','https://desktop.chat.openai.com/','tls_only'),
 )
 
 def classify(exit_code:int, http_code:int, kind:str)->str:
-    if exit_code != 0 or http_code <= 0: return 'transport_failed'
+    if http_code <= 0: return 'transport_failed'
+    # curl may see the real HTTP status (e.g. 403) and then fail while reading
+    # the response body. This is not TLS unreachable, nor a successful request.
+    if exit_code != 0: return 'http_response_with_transfer_error'
     if kind=='http200':
         if http_code==200:return 'reachable'
         if http_code in (403,429):return 'challenge_or_rate_limit'
@@ -38,6 +41,8 @@ def classify(exit_code:int, http_code:int, kind:str)->str:
 
 def test_target(item, proxy:str)->dict:
     name,url,kind=item
+    # This does not reuse ChatGPT/Codex's authenticated endpoint path or token.
+    method='HTTP/1.1 GET / + Upgrade: websocket (anonymous synthetic)' if kind=='wss_handshake' else ('HTTPS GET /cdn-cgi/trace (public)' if kind=='http200' else 'HTTPS GET / (anonymous TLS/HTTP)')
     cmd=['/usr/bin/curl','--silent','--show-error','--proxy',proxy,
          '--connect-timeout','3','--max-time','6','--output','/dev/null',
          '--write-out','%{http_code} %{time_total}']
@@ -52,9 +57,11 @@ def test_target(item, proxy:str)->dict:
         http=int(fields[0]) if fields and fields[0].isdigit() else 0
         ms=round(float(fields[1])*1000) if len(fields)>1 else None
         return {'name':name,'state':classify(result.returncode,http,kind),
-                'http_code':http,'latency_ms':ms,'curl_exit':result.returncode}
+                'http_code':http,'latency_ms':ms,'curl_exit':result.returncode,
+                'probe_method':method,'scope':'anonymous_transport_not_authenticated_business'}
     except (OSError,ValueError,IndexError,subprocess.SubprocessError):
-        return {'name':name,'state':'probe_unavailable','http_code':0,'latency_ms':None}
+        return {'name':name,'state':'probe_unavailable','http_code':0,'latency_ms':None,
+                'probe_method':method,'scope':'anonymous_transport_not_authenticated_business'}
 
 def scan(proxy:str)->dict:
     parsed=urlparse(proxy)
@@ -67,9 +74,11 @@ def scan(proxy:str)->dict:
     return {'source':'bounded_public_tls_probes','state':'completed',
             'checked_at':int(time.time()),'targets':outcomes,
             'public_edge_ok':states.get('chatgpt_edge')=='reachable',
-            'websocket_transport_ok':states.get('chatgpt_websocket') in
-               ('upgrade_accepted','tls_reachable_auth_or_path_unverified','tls_reachable_path_unverified'),
-            'limitations':'no_authenticated_chat_codex_or_computer_use_test'}
+            'websocket_transport_ok':states.get('chatgpt_websocket')=='upgrade_accepted',
+            'websocket_host_http_reachable':states.get('chatgpt_websocket') in
+                ('upgrade_accepted','tls_reachable_auth_or_path_unverified','tls_reachable_path_unverified','http_response_with_transfer_error'),
+            'codex_websocket_upgrade_verified':states.get('codex_websocket')=='upgrade_accepted',
+            'limitations':'anonymous_GET_not_actual_authenticated_ChatGPT_Codex_or_computer_use'}
 
 if __name__=='__main__':
     # Sole argument is the already confirmed localhost proxy supplied by Guardian.

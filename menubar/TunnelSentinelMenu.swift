@@ -143,6 +143,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     private var dashboardTabs: NSSegmentedControl?
     private var dashboardScroll: NSScrollView?
     private var dashboardSelection = 0
+    private var configUpdateBusy = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -231,6 +232,11 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         next.proxyClient = values["proxy_client"] as? String ?? "shadowrocket"
         next.automaticControlEnabled = values["automatic_control_enabled"] as? Bool ?? false
         next.tunnelRecoveryEnabled = values["tunnel_recovery_enabled"] as? Bool ?? false
+        if let bytes = try? Data(contentsOf: base.appendingPathComponent("config.json")),
+           let config = (try? JSONSerialization.jsonObject(with: bytes)) as? [String:Any] {
+            next.automaticControlEnabled = config["automatic_control_enabled"] as? Bool ?? false
+            next.tunnelRecoveryEnabled = config["tunnel_recovery_enabled"] as? Bool ?? false
+        }
         next.deepConnection = values["deep_connection_diagnostics"] as? [String:Any] ?? [:]
         next.codexStream = values["codex_stream_diagnostics"] as? [String:Any] ?? [:]
         next.clashAutoSwitchMode = values["clash_auto_switch_mode"] as? String ?? "simulation_only"
@@ -750,11 +756,11 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         menu.addItem(switchMenuRow("自动节点控制",
                                    subtitle: autoSwitchSupported ? "可控制已验证的 GPT 专用分组" : "当前 Shadowrocket 仅提供只读监测",
                                    on: snapshot.automaticControlEnabled,
-                                   enabled: autoSwitchSupported, tag: 1))
+                                   enabled: autoSwitchSupported && !configUpdateBusy, tag: 1))
         menu.addItem(switchMenuRow("隧道掉线重连",
                                    subtitle: "只处理本地代理断开，不切换节点",
                                    on: snapshot.tunnelRecoveryEnabled,
-                                   enabled: snapshot.proxyClient == "shadowrocket", tag: 2))
+                                   enabled: snapshot.proxyClient == "shadowrocket" && !configUpdateBusy, tag: 2))
         menu.addItem(.separator())
         menu.addItem(menuItem("退出菜单栏", symbol: "xmark.circle", action: #selector(quitMenu)))
         statusItem.menu = menu
@@ -827,23 +833,67 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return json["codex_auto_failover_enabled"] as? Bool == true
     }
 
-    private func updateMonitorConfig(_ change: (inout [String:Any]) -> Void) {
+    // All slow disk/service work must stay off the AppKit main thread.
+    // The Guardian needs a service restart to load this config; never wait
+    // synchronously for launchctl from a slider's action callback.
+    private func updateMonitorConfig(_ changes: [String: Bool], disarmFailovers: Bool = false) {
+        guard !configUpdateBusy else { return }
+        configUpdateBusy = true
         let path = base.appendingPathComponent("config.json")
-        guard let source = try? Data(contentsOf:path),
-              var settings = (try? JSONSerialization.jsonObject(with:source)) as? [String:Any]
-        else { showError("无法读取守护配置"); return }
-        change(&settings)
-        guard let payload = try? JSONSerialization.data(withJSONObject:settings,
-                                                          options:[.prettyPrinted,.sortedKeys])
-        else { showError("配置校验失败");return }
-        do {
-            try payload.write(to:path,options:.atomic)
-            let result=runLaunchctl(["kickstart","-k","gui/\(getuid())/\(guardianLabel)"])
-            if result.0 != 0 { showError("已写入配置，但 Guardian 重启失败，请检查运行状态") }
-            IntegratedRecovery.shared.tick()
-            lastRenderedState=""
-            refreshStatus()
-        } catch { showError("保存监控开关失败") }
+        let service = "gui/\(getuid())/\(guardianLabel)"
+        // Optimistic UI display; the saved config remains the source of truth.
+        if let enabled = changes["automatic_control_enabled"] { snapshot.automaticControlEnabled = enabled }
+        if let enabled = changes["tunnel_recovery_enabled"] { snapshot.tunnelRecoveryEnabled = enabled }
+        // Do not replace NSMenu contents reentrantly during its switch event.
+        DispatchQueue.main.async { [weak self] in
+            self?.lastRenderedState = ""
+            self?.rebuildMenu()
+            self?.refreshDashboard()
+        }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var errorText: String?
+            do {
+                guard let source = try? Data(contentsOf: path),
+                      var settings = (try? JSONSerialization.jsonObject(with: source)) as? [String:Any]
+                else { throw NSError(domain: "TunnelSentinel", code: 1) }
+                for (key,value) in changes { settings[key] = value }
+                if disarmFailovers {
+                    settings["codex_auto_failover_enabled"] = false
+                    settings["clash_auto_failover_enabled"] = false
+                    settings["codex_auto_preflight_enabled"] = false
+                }
+                let payload = try JSONSerialization.data(withJSONObject: settings,
+                                                          options: [.prettyPrinted,.sortedKeys])
+                try payload.write(to: path, options: .atomic)
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                process.arguments = ["kickstart", "-k", service]
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                try process.run()
+                // Bounded wait on utility queue. A hung launchctl cannot hang UI.
+                let limit = Date().addingTimeInterval(8)
+                while process.isRunning && Date() < limit {
+                    Thread.sleep(forTimeInterval: 0.05)
+                }
+                if process.isRunning {
+                    process.terminate()
+                    errorText = "配置已保存，但守护进程重载超时。请检查后台服务。"
+                } else if process.terminationStatus != 0 {
+                    errorText = "配置已保存，但守护进程重载失败。"
+                }
+            } catch {
+                errorText = "设置更新未完成。请检查监控配置文件。"
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.configUpdateBusy = false
+                if let errorText { self.showError(errorText) }
+                self.lastRenderedState = ""
+                self.refreshStatus()
+                IntegratedRecovery.shared.tick()
+            }
+        }
     }
 
     @objc private func toggleAutomaticControl() {
@@ -856,19 +906,12 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             notice.addButton(withTitle:"取消")
             guard notice.runModal() == .alertFirstButtonReturn else {return}
         }
-        updateMonitorConfig { config in
-            config["automatic_control_enabled"]=enabled
-            if !enabled {
-                config["codex_auto_failover_enabled"]=false
-                config["clash_auto_failover_enabled"]=false
-                config["codex_auto_preflight_enabled"]=false
-            }
-        }
+        updateMonitorConfig(["automatic_control_enabled": enabled], disarmFailovers: !enabled)
     }
 
     @objc private func toggleTunnelRecovery() {
         let enabled = !snapshot.tunnelRecoveryEnabled
-        updateMonitorConfig { settings in settings["tunnel_recovery_enabled"]=enabled }
+        updateMonitorConfig(["tunnel_recovery_enabled": enabled])
     }
 
     @objc private func showDeepConnection() { presentDashboard(tab: 1) }
@@ -901,6 +944,10 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     }
 
     @objc private func switchChanged(_ sender: NSSwitch) {
+        if configUpdateBusy {
+            sender.state = (sender.tag == 1 ? snapshot.automaticControlEnabled : snapshot.tunnelRecoveryEnabled) ? .on : .off
+            return
+        }
         if sender.tag == 1 {
             guard autoSwitchSupported else { sender.state = .off; return }
             toggleAutomaticControl()
@@ -1031,7 +1078,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     private func probeLabel(_ key: String) -> String {
         switch key {
         case "chatgpt_edge": return "ChatGPT 公共入口"
-        case "chatgpt_websocket": return "ChatGPT WebSocket"
+        case "chatgpt_websocket": return "ChatGPT WebSocket 域名"
+        case "codex_websocket": return "Codex WebSocket 域名"
         case "openai_api_tls": return "OpenAI API TLS"
         case "openai_auth_tls": return "OpenAI 登录 TLS"
         case "chatgpt_desktop_tls": return "桌面关联域名 TLS"
@@ -1044,6 +1092,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         case "tls_reachable_auth_or_path_unverified", "tls_reachable_path_unverified", "tls_reachable_not_authenticated":
             return ("传输可达", .systemBlue)
         case "transport_failed": return ("连接失败", .systemOrange)
+        case "http_response_with_transfer_error": return ("HTTP响应后中断", .systemOrange)
         case "pending_or_stale": return ("等待更新", .secondaryLabelColor)
         default: return ("待确认", .secondaryLabelColor)
         }
@@ -1087,22 +1136,30 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                     let result = probeState(state)
                     let code = test["http_code"] as? Int ?? 0
                     let ms = test["latency_ms"] as? Int ?? 0
-                    let explanation = "匿名探测 · HTTP \(code == 0 ? "—" : String(code)) · \(ms)ms"
-                    dashboardRow(probeLabel(key), explanation: explanation, value: result.0,
-                                 tone: result.1, in: doc, y: &y)
+                    let isWebsocket = key == "chatgpt_websocket" || key == "codex_websocket"
+                    let method = isWebsocket ? "模拟 GET / + Upgrade（无登录）" :
+                        key == "chatgpt_edge" ? "GET /cdn-cgi/trace（公开入口）" :
+                        "GET /（匿名 TLS/HTTP）"
+                    let explanation = "\(method) · HTTP \(code == 0 ? "—" : String(code)) · \(ms)ms"
+                    let display = isWebsocket && state != "upgrade_accepted"
+                        && ["tls_reachable_auth_or_path_unverified", "tls_reachable_path_unverified"].contains(state)
+                        ? ("仅 HTTP 有响应", NSColor.secondaryLabelColor) : result
+                    dashboardRow(probeLabel(key), explanation: explanation, value: display.0,
+                                 tone: display.1, in: doc, y: &y)
                 }
             }
             dashboardHeading("Codex · 浏览器", in: doc, y: &y)
             let stream = snapshot.codexStream
             let counts = stream["recent_counts"] as? [String:Int] ?? [:]
             let total = (counts["broken_pipe"] ?? 0) + (counts["websocket_handshake"] ?? 0) + (counts["connection_reset"] ?? 0)
-            dashboardRow("Codex 响应流", explanation: "最近 210 秒内 broken pipe / 握手 / 连接重置",
+            dashboardRow("Codex 响应流日志", explanation: "最近 210 秒内 broken pipe / 握手 / 连接重置",
                          value: (stream["state"] as? String) == "ok" ? "\(total) 次断流" : "日志不可用",
                          tone: total > 0 ? .systemOrange : .secondaryLabelColor, in: doc, y: &y)
             let browserCount = snapshot.issues.filter { $0.title.contains("浏览器控制") }.reduce(0) { $0 + $1.count }
-            dashboardRow("浏览器控制后端", explanation: "近 3 分钟已分类日志事件；非真实操作测试",
+            dashboardRow("浏览器控制后端日志", explanation: "近 3 分钟已分类日志事件；未主动执行网页操作",
                          value: "\(browserCount) 条相关提示", in: doc, y: &y)
-            dashboardNote("“传输可达”只表示 TLS/HTTP 有响应，不能证明登录、Codex 长连接或 Computer Use 具体操作成功。", in: doc, y: &y)
+            dashboardNote("上方均为无登录的模拟探测，并非客户端实际接口请求。WebSocket 必须返回 101 才算成功升级；HTTP 403/404/421 仅表明服务器有响应。", in: doc, y: &y)
+            dashboardNote("Codex 断流取自本机只读 SQLite 日志；浏览器控制异常来自客户端日志分类，不是独立的 Computer Use 业务拨测。", in: doc, y: &y)
             dashboardHeading("其他 AI 网站 · 公开探测", in: doc, y: &y)
             if !snapshot.aiMatrixFresh { dashboardNote("AI 分流矩阵约 15 分钟更新一次，当前没有新鲜结果。", in: doc, y: &y) }
             for site in snapshot.aiMatrixFresh ? snapshot.aiMatrixSites : [] {
@@ -1149,11 +1206,12 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         default:
             dashboardHeading("自动化安全设置", in: doc, y: &y)
             dashboardSwitch("自动节点控制", description: autoSwitchSupported ? "仅允许已验证的 GPT 独立分组" : "Shadowrocket 当前组无法证实，不开放自动切换",
-                            isOn: snapshot.automaticControlEnabled, canEdit: autoSwitchSupported,
+                            isOn: snapshot.automaticControlEnabled,
+                            canEdit: autoSwitchSupported && !configUpdateBusy,
                             tag: 1, in: doc, y: &y)
             dashboardSwitch("隧道掉线重连", description: "与切换节点不同；仅在本地代理意外断开时尝试重连",
                             isOn: snapshot.tunnelRecoveryEnabled,
-                            canEdit: snapshot.proxyClient == "shadowrocket",
+                            canEdit: snapshot.proxyClient == "shadowrocket" && !configUpdateBusy,
                             tag: 2, in: doc, y: &y)
             dashboardNote("以上是真正的 macOS 系统滑动开关。不会因为打开监控中心就更改你的代理节点、规则或订阅。", in: doc, y: &y)
             dashboardHeading("数据来源与限制", in: doc, y: &y)

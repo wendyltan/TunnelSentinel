@@ -298,3 +298,12 @@ swiftc -parse-as-library -O -framework AppKit \
 - Shadowrocket 主信息只显示**已测的 GPT 公共出口 + 只读监测状态**，取消了常驻的“GPT 分组节点 · 暂无近期读取”。原因是之前的原生 UI 节点字段只有启用 AX 控制、打开旧指定 fallback 页面、节点名匹配固定四节点时才会采到；如今用户关闭节点控制、代理原生日志又关闭，**不会**等待就突然产生新数据。节点详情页明确区分全局 Shadowrocket 节点与 GPT 请求节点，并说明未启用请求日志与当前数据不可核实。
 - 原 AI 分流、分层诊断、节点事件、状态和设置整合到统一窗口：HTTP 404/421/403 用“传输可达 / 登录未验证”表示，桌面 TLS 失败单独提示，不因为这项失败判定 Computer Use 整体失效。只读事件展示已识别错误与出口变化；长篇历史 `NSAlert` / 原始文本日志不再是主入口。
 - 运行时 5 秒刷新详细窗口保留滚动位置；用户切换标签时返回对应页面顶部。导航、开关及窗口用 macOS System Events 实机打开，截屏核对 340pt 菜单和概览/连接/节点/设置四页。无 Shadowrocket、Clash 或 ChatGPT 进程重启及节点变更；监控服务原样持续运行。
+
+### 2026-10-26 21:07 · 设置滑动卡顿与业务端点探测口径纠正
+
+- 用户点开原生 `NSSwitch` 的“隧道掉线重连”后发生界面长时间卡顿。实际原因：`updateMonitorConfig` 在 AppKit 主线程读/写 JSON 并同步调用 `launchctl kickstart -k`，直到 Guardian 重启返回，进而同步刷新 GUI。现将 config 原子写入、`launchctl` 调用与最多 8 秒的重启等待迁移至 QoS utility 后台任务，菜单 UI 先响应，重建延迟到下一次主队列回调，防止 NSMenu 跟踪中重入；重启错误向 UI 反馈。5 秒状态刷新同时从实时配置文件读取开关值，不再盲信上一个 Guardian `status.json` 的旧开关。正在写入时滑块防止重复提交。监控 Guardian 必须重载配置才会生效，此项不同于更换机场节点。
+- `gpt_deep_probe.py` 六个固定匿名目标，全部通过当前系统本地代理、**curl 默认 GET** 执行：`chatgpt.com/cdn-cgi/trace` 为 GET 公共探测；`ws.chatgpt.com/` 为带 Upgrade 的 HTTP/1.1 GET；新加 `chatgpt.com/` 的匿名 Codex Upgrade GET；`api.openai.com/`、`auth.openai.com/`、`desktop.chat.openai.com/` 都是匿名 GET 根目录/TLS-HTTP 检测。并不获取登录凭据、不使用真实会话路由或业务 POST、不测试真实 Codex/WebSocket 持久流。官方网络建议参考 https://help.openai.com/en/articles/9247338-network-recommendations-for-chatgpt-errors-on-web-and-apps ，只支持目的地主机/标准 WS Upgrade 的判断，**不代表**客户端真实内部 API 具体路径或业务方法。
+- 旧检测错误地将 WebSocket 域名返回 403/404 等解释为 `websocket_transport_ok=true`；此标识现在**仅 HTTP 101** 时为 true，另设 `websocket_host_http_reachable` 区分“服务器 HTTP 层有响应”；Codex 使用独立的 `codex_websocket_upgrade_verified`，同样只接受 101。每个探测记录 `probe_method` 与 `scope=anonymous_transport_not_authenticated_business`； UI 明示“模拟 GET / + Upgrade（无登录）”及“仅 HTTP 有响应”。来源于本机 Codex SQLite 和客户端浏览器后端的计数单独标注为**被动日志观察**，不充当远端业务探针。
+- 按用户现有设置保留 `tunnel_recovery_enabled=true`（用户主动打开）、`automatic_control_enabled=false`、`codex_auto_failover_enabled=false`、`clash_auto_failover_enabled=false`。此更改不修改 Shadowrocket 节点、订阅、分组，不打开自动节点故障转移，不触发代理重连测试。
+
+补充：当 `curl` 已取得 HTTP 状态码但随后传输异常退出，诊断单独标记 `http_response_with_transfer_error`（界面“HTTP响应后中断”），与完全未建立 TLS/HTTP 的 `transport_failed` 区分。WebSocket `websocket_transport_ok` 同时要求 `curl` 成功结束与 HTTP 101，避免 403/404 或中途断流造成伪成功。

@@ -19,10 +19,13 @@ class DeepProbeTests(unittest.TestCase):
   self.assertEqual(probe.classify(0,404,'wss_handshake'),'tls_reachable_auth_or_path_unverified')
   self.assertEqual(probe.classify(0,421,'tls_only'),'tls_reachable_not_authenticated')
   self.assertEqual(probe.classify(35,0,'tls_only'),'transport_failed')
+  self.assertEqual(probe.classify(56,403,'wss_handshake'),'http_response_with_transfer_error')
   self.assertEqual(probe.classify(0,101,'wss_handshake'),'upgrade_accepted')
+  self.assertNotEqual(probe.classify(0,404,'wss_handshake'),'upgrade_accepted')
 
  def test_fixed_destination_allowlist_and_local_proxy_only(self):
-  self.assertEqual(len(probe.TARGETS),5)
+  self.assertEqual(len(probe.TARGETS),6)
+  self.assertIn(('codex_websocket','https://chatgpt.com/','wss_handshake'),probe.TARGETS)
   self.assertTrue(all(x[1].startswith('https://') for x in probe.TARGETS))
   for host in ('http://8.8.8.8:1082','https://proxy.example.com:1234','', 'socks5://127.0.0.1:1082'):
    self.assertEqual(probe.scan(host)['state'],'invalid_local_proxy')

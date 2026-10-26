@@ -85,6 +85,10 @@ private struct Snapshot {
     var lastEdgeOutage: [String: Any] = [:]
 }
 
+private final class DashboardFlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 // NSMenuItem custom views are created before they inherit the menu's effective
 // light/dark appearance. Resolve semantic NSColors while drawing, not when
 // constructing a CALayer's fixed CGColor; otherwise a dark card can retain
@@ -135,6 +139,10 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     private var logTextView: NSTextView?
     private var logPicker: NSPopUpButton?
     private var logSummary: NSTextField?
+    private var dashboardWindow: NSWindow?
+    private var dashboardTabs: NSSegmentedControl?
+    private var dashboardScroll: NSScrollView?
+    private var dashboardSelection = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -335,6 +343,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         guardianPaused = isPaused()
         guardianRunning = isRunning()
         rebuildMenu()
+        if dashboardWindow?.isVisible == true { refreshDashboard() }
     }
 
     private func refreshNode() {
@@ -404,7 +413,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     }
 
     private var nodePending: Bool {
-        if snapshot.routeManagement == "native_fallback" || snapshot.routeManagement == "clash_observe_only" { return false }
+        if snapshot.routeManagement == "native_fallback" || snapshot.routeManagement == "shadowrocket_policy_unverified" || snapshot.routeManagement == "clash_observe_only" { return false }
         guard let liveNode, !liveNode.isEmpty else { return false }
         return liveNode != snapshot.checkedNode
     }
@@ -412,7 +421,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         // Native fallback selects egress independently from the global node.
         // An unreadable global-node preference is not a network fault and
         // should not override a passing OpenAI edge + quiet client diagnostics.
-        if snapshot.routeManagement == "native_fallback" || snapshot.routeManagement == "clash_observe_only" { return false }
+        if snapshot.routeManagement == "native_fallback" || snapshot.routeManagement == "shadowrocket_policy_unverified" || snapshot.routeManagement == "clash_observe_only" { return false }
         return liveNode == nil && !snapshot.nodeVerified
     }
 
@@ -490,7 +499,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         if !snapshot.networkHealthy && recoveryBlocked { return "自动恢复受阻 · 需要处理" }
         if !snapshot.networkHealthy { return "代理链路异常" }
         if nodeUnverified { return "基础网络可达 · 节点未核实" }
-        if snapshot.business == "attention" { return "发现业务异常" }
+        if snapshot.business == "attention" { return "网络正常 · 有客户端提示" }
         return "网络基础链路正常"
     }
 
@@ -504,7 +513,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                 snapshot.recoveryReason
         }
         if !snapshot.networkHealthy { return "公共入口不可达 · 等待有界恢复检查" }
-        if snapshot.business == "attention" { return "代理可达，但客户端近期报告错误" }
+        if snapshot.business == "attention" { return "公共入口正常 · 客户端日志有待核实事件" }
         if nodeUnverified { return "Shadowrocket 节点名读取受限；链路仍在独立监测" }
         if snapshot.routeManagement == "clash_observe_only" {
             return "Clash \(snapshot.clashMode.uppercased()) · AI → \(snapshot.clashParent) · 仅监测"
@@ -603,20 +612,18 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                                 color: .secondaryLabelColor,
                                 frame: NSRect(x: 12, y: 84, width: nodeBox.bounds.width - 24, height: 15)))
         let egressTitle = clashMode
-            ? (snapshot.backendVerified ? snapshot.actualBackendName : "当前没有可确认的 GPT 活跃请求")
+            ? (snapshot.backendVerified ? snapshot.actualBackendName : "当前请求节点未确认")
             : observedEgress
         nodeBox.addSubview(label(egressTitle,
                                 font: .systemFont(ofSize: 13.5, weight: .semibold),
                                 color: .labelColor,
                                 frame: NSRect(x: 12, y: 57, width: nodeBox.bounds.width - 24, height: 22)))
-        nodeBox.addSubview(label(clashMode ? "GPT 公共出口 · 周期探测" :
-                                nativeGroupUIRecent ? "GPT 分组节点 · 最近原生界面读取"
-                                : "GPT 分组节点 · 暂无近期读取",
+        nodeBox.addSubview(label(clashMode ? "GPT 公共出口 · 周期探测" : "安全模式 · 控制状态",
                                 font: .systemFont(ofSize: 10, weight: .medium),
                                 color: .secondaryLabelColor,
                                 frame: NSRect(x: 12, y: 35, width: nodeBox.bounds.width - 24, height: 15)))
         nodeBox.addSubview(label(clashMode ? observedEgress :
-                                 nativeGroupUIRecent ? snapshot.nativeGroupUINode : "当前节点未核实 · 可查看详细状态",
+                                 snapshot.automaticControlEnabled ? "节点控制允许（需后端另行验证）" : "仅监测 · 不自动更换节点",
                                 font: .systemFont(ofSize: 13.5, weight: .semibold),
                                 color: .labelColor,
                                 frame: NSRect(x: 12, y: 9, width: nodeBox.bounds.width - 24, height: 23)))
@@ -651,7 +658,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             ? String(snapshot.checkedAt.dropFirst(11).prefix(8)) : "—"
         let recoveryText = recoveryBlocked && snapshot.recoveryRetrySeconds > 0
             ? " · 恢复重试约 \(snapshot.recoveryRetrySeconds / 60) 分钟后"
-            : (clashMode ? " · Clash 本地 API" : " · 节点读取受系统权限约束")
+            : (clashMode ? " · Clash API" : " · Shadowrocket")
         v.addSubview(label("最近检测 \(timeText)\(recoveryText)",
                            font: .systemFont(ofSize: 10), color: .tertiaryLabelColor,
                            frame: NSRect(x: 20, y: 17, width: w - 40, height: 18)))
@@ -673,71 +680,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return "AI 分流检测 · \(ok)/\(snapshot.aiMatrixSites.count) 可达"
     }
 
-    @objc private func showAIMatrix() {
-        let dialog = NSAlert()
-        dialog.messageText = "AI 站点分流检测"
-        dialog.alertStyle = .informational
-        dialog.addButton(withTitle: "关闭")
-        if !snapshot.fresh || !snapshot.aiMatrixFresh {
-            dialog.informativeText = """
-                暂无有效的多站点检测结果。
-                后台每约 15 分钟进行一次轻量测试。
-                当前基础健康检查与本测试互不影响。
-                """
-        } else {
-            let rows = snapshot.aiMatrixSites.map { site -> String in
-                let state = site.status == "reachable" ? "可达" : "未确认"
-                let location = site.location.isEmpty ? "—" : site.location
-                let timing = site.status == "reachable" ? " · \(site.ms)ms" : ""
-                return "\(site.name)  \(state) · \(location)\(timing)"
-            }.joined(separator: "\n")
-            dialog.informativeText = """
-                最近检查：\(snapshot.aiMatrixCheckedAt)
-
-                \(rows)
-
-                仅表示当前代理路径的公共网站可达性及出口地理信息。
-                不等于节点支持 ChatGPT 登录、对话或 API。
-                其他 AI 网站的失败不会触发 ChatGPT 切换。
-                \(methodAuditDescription)
-                \(egressHistoryDescription)
-                """
-        }
-        dialog.runModal()
-    }
-
-    private var egressHistoryDescription: String {
-        guard !snapshot.lastEgressChangeAt.isEmpty else { return "" }
-        let former = snapshot.lastEgressChangeFrom.isEmpty ? "地区未确认" : snapshot.lastEgressChangeFrom
-        let latest = snapshot.lastEgressChangeTo.isEmpty ? "地区未确认" : snapshot.lastEgressChangeTo
-        let nearby = snapshot.lastEgressChangeWithOutage ? "；附近记录有公共入口中断" : ""
-        return """
-
-            最近观测到出口变化：\(former) → \(latest)
-            时间：\(snapshot.lastEgressChangeAt)\(nearby)
-            该变化经两次成功探测确认，但不能证明机场节点已切换。
-            """
-    }
-
-    private var methodAuditDescription: String {
-        guard snapshot.aiMatrixFresh else { return "" }
-        switch snapshot.endpointMethodResult {
-        case "possible_head_false_negative":
-            return """
-
-                当前路径的检测 URL 存在方法差异：
-                GET \(snapshot.endpointGetCode) / HEAD \(snapshot.endpointHeadCode)（Cloudflare 验证）
-                注意：尚未证明 Shadowrocket 后台采用 HEAD。
-                这是待核查风险，不触发节点切换。
-                """
-        case "no_mismatch_observed":
-            return "\n当前路径 HEAD/GET 无已知冲突（不代表全部节点）。"
-        case "inconclusive":
-            return "\n当前路径 HEAD/GET 检查结果不确定，请勿推断节点失效。"
-        default:
-            return ""
-        }
-    }
+    @objc private func showAIMatrix() { presentDashboard(tab: 1) }
 
     private func rebuildMenu() {
         guard let statusItem else { return }
@@ -789,7 +732,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             ? "Shadowrocket 分组界面近期选中：\(snapshot.nativeGroupUINode)（仅代表界面读数）"
             : snapshot.fresh && snapshot.backendVerified
             ? "GPT 最近请求实际节点：\(snapshot.actualBackendName)（\(snapshot.backendObservedAt)）"
-            : "GPT 当前节点尚未核实；上次请求记录或截图：\(snapshot.backendLastLoggedName.isEmpty ? snapshot.userLastVerifiedNode : snapshot.backendLastLoggedName)（\(snapshot.backendLastLoggedAt.isEmpty ? snapshot.userLastVerifiedDate : snapshot.backendLastLoggedAt)）"
+            : "Shadowrocket 当前 GPT 请求节点未知；仅能观察公共出口。详情见监控中心。"
         let routeNodeDescription = snapshot.routeManagement == "clash_observe_only"
             ? "Clash Proxies 当前选中：\(snapshot.clashSelectedNode)"
             : "Shadowrocket 全局节点：\(globalNode)"
@@ -801,46 +744,19 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         card.view = menuCard()
         menu.addItem(card)
         menu.addItem(.separator())
-        menu.addItem(menuItem("立即检查链路", symbol: "arrow.clockwise", action: #selector(forceProbe)))
-        menu.addItem(menuItem(aiMatrixSummary, symbol: "globe.americas",
-                              action: #selector(showAIMatrix)))
-        menu.addItem(menuItem("查看 GPT 节点状态与事件", symbol: "list.bullet.rectangle", action: #selector(openLog)))
-        menu.addItem(menuItem("ChatGPT / Codex 分层诊断", symbol: "stethoscope",
-                              action: #selector(showDeepConnection)))
-        menu.addItem(menuItem(snapshot.automaticControlEnabled
-                              ? "自动节点控制 · 已开启（点击关闭）"
-                              : "只读监控 · 自动节点控制已关闭", symbol: "lock.shield",
-                              action: #selector(toggleAutomaticControl)))
-        menu.addItem(menuItem(snapshot.tunnelRecoveryEnabled
-                              ? "隧道掉线重连 · 已开启（点击关闭）"
-                              : "隧道掉线重连 · 已关闭（点击开启）", symbol: "arrow.clockwise.circle",
-                              action: #selector(toggleTunnelRecovery)))
-        let recovery = IntegratedRecovery.shared.summary
-        if snapshot.routeManagement == "clash_observe_only" {
-            menu.addItem(menuItem(snapshot.clashAutoSwitchMode == "live_guarded"
-                                  ? "Clash 自动故障转移 · 已启用"
-                                  : "Clash 自动故障转移 · 未启用", symbol: "shield-check",
-                                  action: #selector(showClashRecoveryPlan)))
-            menu.addItem(menuItem(snapshot.clashAutoSwitchMode == "live_guarded"
-                                  ? "关闭 Clash 自动切换"
-                                  : "开启 Clash 自动切换", symbol: "arrow.triangle.2.circlepath",
-                                  action: #selector(toggleClashRecovery)))
-        } else {
-            menu.addItem(menuItem(snapshot.routeManagement == "shadowrocket_policy_unverified"
-                                  ? "Shadowrocket 节点切换 · 分组未核实（不可用）"
-                                  : "节点故障转移 · \(recovery)",
-                                  symbol: "lock", action: #selector(showShadowrocketLimits)))
-        }
-        if (recoveryBlocked || !snapshot.networkHealthy) && snapshot.routeManagement != "clash_observe_only" {
-            menu.addItem(menuItem("打开 Shadowrocket 手动处理", symbol: "network",
-                                  action: #selector(openShadowrocket)))
-        }
+        menu.addItem(menuItem("打开监控中心…", symbol: "rectangle.grid.1x2", action: #selector(openDashboard)))
+        menu.addItem(menuItem("立即检测基础链路", symbol: "arrow.clockwise", action: #selector(forceProbe)))
         menu.addItem(.separator())
-        menu.addItem(menuItem(guardianPaused ? "开启自动守护" : "暂停自动守护",
-                              symbol: guardianPaused ? "play.circle" : "pause.circle",
-                              action: #selector(toggleGuardian)))
-        menu.addItem(menuItem("退出菜单栏（守护继续运行）",
-                              symbol: "xmark.circle", action: #selector(quitMenu)))
+        menu.addItem(switchMenuRow("自动节点控制",
+                                   subtitle: autoSwitchSupported ? "可控制已验证的 GPT 专用分组" : "当前 Shadowrocket 仅提供只读监测",
+                                   on: snapshot.automaticControlEnabled,
+                                   enabled: autoSwitchSupported, tag: 1))
+        menu.addItem(switchMenuRow("隧道掉线重连",
+                                   subtitle: "只处理本地代理断开，不切换节点",
+                                   on: snapshot.tunnelRecoveryEnabled,
+                                   enabled: snapshot.proxyClient == "shadowrocket", tag: 2))
+        menu.addItem(.separator())
+        menu.addItem(menuItem("退出菜单栏", symbol: "xmark.circle", action: #selector(quitMenu)))
         statusItem.menu = menu
     }
 
@@ -901,236 +817,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         refreshStatus()
     }
 
-    private func logLines(historyOnly: Bool) -> [String] {
-        let folder = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Logs/OpenAILinkGuardian")
-        let names = historyOnly ? ["guardian.log.2", "guardian.log.1", "guardian.log"] : ["guardian.log"]
-        let markers = [
-            "failover triggered", "trying node=", "failover succeeded", "node verification failed",
-            "all candidates failed", "Shadowrocket tunnel is down", "requesting reconnect",
-            "tunnel=down", "guardian cycle failed", "new ChatGPT network log failures="
-        ]
-        var lines: [String] = []
-        for name in names {
-            let url = folder.appendingPathComponent(name)
-            guard let data = try? Data(contentsOf: url),
-                  let content = String(data: data, encoding: .utf8) else { continue }
-            let raw = content.components(separatedBy: .newlines)
-            lines += historyOnly ? raw.filter { row in markers.contains { row.contains($0) } } : Array(raw.suffix(220))
-        }
-        return Array(lines.filter { !$0.isEmpty }.suffix(220))
-    }
-
-    private func nodeEvidenceText() -> String {
-        if snapshot.routeManagement == "clash_observe_only" {
-            return """
-                GPT 节点状态与事件 · Clash Verge
-                ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                代理客户端：Clash Verge / Mihomo（\(snapshot.clashMode)）
-                GPT 规则分组：\(snapshot.clashGroup) → \(snapshot.clashParent)
-                当前组内选中节点：\(snapshot.clashSelectedNode)
-                活跃 GPT 请求：\(snapshot.clashActiveConnections)
-                本地 API 最近请求节点：\(snapshot.backendVerified ? snapshot.actualBackendName : "无近期证据")
-                请求级证据：\(snapshot.backendVerified ? "Mihomo 连接链（非历史出口推测）" : "无当前活跃连接，不能证明此刻实际节点")
-                GPT 公共出口：\(observedEgress)
-
-                当前候选：\(snapshot.clashCandidateCount)
-                有近期延迟记录：\(snapshot.clashEligibleCount)
-                故障切换：\(snapshot.clashAutoSwitchMode == "live_guarded" ? "真实自动切换已启用" : "只读监测")
-                最近一次控制器检查：\(snapshot.clashFailoverState.isEmpty ? "暂无记录" : snapshot.clashFailoverState)
-                GPT 专用组：TunnelSentinel-OpenAI（不修改共享 AI / Proxies）
-                触发：最近210秒内3次 Codex 流错误，最短10分钟冷却，每日最多3次。
-                切换后验证节点回读与公共入口；真实 Codex 恢复仍需业务事件验证。
-                """
-        }
-        let group = snapshot.nativeFallbackGroup.isEmpty ? "未配置" : snapshot.nativeFallbackGroup
-        let backend: String
-        if nativeGroupUIRecent {
-            backend = "\(snapshot.nativeGroupUINode)（近45秒内 Shadowrocket 组内界面读数，非请求日志）"
-        } else if snapshot.fresh && snapshot.backendVerified && !snapshot.actualBackendName.isEmpty {
-            backend = "\(snapshot.actualBackendName)（最近 GPT 请求：\(snapshot.backendObservedAt)，原生记录）"
-        } else {
-            backend = "当前节点未核实（近期没有新的 GPT 原生代理请求日志）"
-        }
-        let lastNative = snapshot.backendLastLoggedName.isEmpty
-            ? "尚无符合 OpenAI 分组的原生日志"
-            : "\(snapshot.backendLastLoggedName)（\(snapshot.backendLastLoggedAt)，上次实际请求）"
-        let nativeHistory = snapshot.backendLogHistory.suffix(10).map { item -> String in
-            let when = item["observed_at"] as? String ?? "?"
-            let from = item["from_node"] as? String ?? "?"
-            let to = item["to_node"] as? String ?? "?"
-            return "  · \(when)  GPT 请求节点：\(from) → \(to)"
-        }.joined(separator: "\n")
-        let lastVerified = snapshot.userLastVerifiedNode.isEmpty
-            ? "无人工核实记录"
-            : "\(snapshot.userLastVerifiedNode)（\(snapshot.userLastVerifiedDate) 界面截图；仅当时选中）"
-        let candidates = snapshot.screenshotCandidates.isEmpty
-            ? "未获得可靠候选名单"
-            : snapshot.screenshotCandidates.joined(separator: "、")
-        let edge = snapshot.fresh && snapshot.networkHealthy && snapshot.egressObserved
-            ? [snapshot.egressCountry, snapshot.egressColo].filter { !$0.isEmpty }.joined(separator: "-")
-            : "待确认"
-        let edgeIP = snapshot.fresh && snapshot.networkHealthy && snapshot.egressObserved
-            ? snapshot.egressIP : "未观测"
-        let health = snapshot.fresh
-            ? (snapshot.networkHealthy ? "公共入口可达" : "公共入口异常") : "状态已过期"
-        let business = snapshot.business == "attention" ? "有近期业务异常" : "近期未检测到业务异常"
-        let lastOutage = snapshot.lastEdgeOutage.isEmpty
-            ? "未记录" : "\(snapshot.lastEdgeOutage["observed_at"] as? String ?? "未知时间")；"
-                + "采样中断 \(snapshot.lastEdgeOutage["sampled_outage_seconds"] ?? "未知") 秒"
-        let changes = snapshot.observedEgressHistory.suffix(6).map { event -> String in
-            let moment = event["observed_at"] as? String ?? "时间未确认"
-            let former = event["geo_before"] as? String ?? "?"
-            let current = event["geo_after"] as? String ?? "?"
-            let linked = (event["preceded_by_recent_public_outage"] as? Bool ?? false)
-                ? "；附近曾有公共入口中断" : ""
-            return "  · \(moment)  出口：\(former) → \(current)\(linked)"
-        }.joined(separator: "\n")
-        return """
-            GPT 节点状态与事件
-            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            历史配置分组：\(group)（未核实当前 GPT 规则命中）
-            自动节点控制：\(snapshot.automaticControlEnabled ? "允许" : "关闭 · 只读")
-            隧道自动重连：\(snapshot.tunnelRecoveryEnabled ? "开启" : "关闭")
-            最近一次 GPT 请求：\(backend)
-            上次原生日志节点：\(lastNative)
-            上次人工确认：\(lastVerified)
-            上次确认候选：\(candidates)
-
-            当前 GPT 公共入口：\(health)
-            客户端业务状态：\(business)
-            实际出口地区：\(edge)
-            出口 IP（技术参考）：\(edgeIP)
-            Shadowrocket 全局节点：\(globalNode)
-
-            GPT 原生节点变更记录
-            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            \(nativeHistory.isEmpty ? "  尚无不同节点的连续请求证据" : nativeHistory)
-
-            自然故障留证
-            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            最近公共入口恢复：\(lastOutage)
-            最近出口变化：
-            \(changes.isEmpty ? "  暂无连续两次确认的出口变化" : changes)
-
-            订阅迁移注意
-            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            当前 fallback 只绑定指定订阅，不能自动跟随新机场。
-            订阅自身更新可刷新候选，但不同机场的节点名可能
-            不匹配当前正则筛选条件。换机场后请先检查分组候选数、
-            重新指定「服务器节点」及筛选规则，再确认 GPT 规则命中。
-            不会自动导入或读取订阅链接、密码等凭据。
-
-            数据可信度说明
-            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            · 上次人工确认的节点不等于此刻实际使用的节点。
-            · IP/地区只证明当前网络出口，不能反推出机场节点名。
-            · Shadowrocket 原生代理日志已集成：节点名来自每条 GPT
-              请求的命中结果，不等于“持续在线选中”的实时状态。
-            · 日志关闭或 10 分钟无新 GPT 连接后不再显示实时节点；
-              上次请求保留时间标识，非 GPT 网站活动绝不采集。
-            · 这是只读诊断，不会替 Shadowrocket 自动换节点。
-            """
-    }
-
-    private func refreshLogWindow() {
-        let mode = logPicker?.indexOfSelectedItem ?? 0
-        let historical = mode == 2
-        let rows = mode == 0 ? [] : logLines(historyOnly: historical)
-        let pattern = #"(?i)([?&](?:token|key|auth|password|secret)=)[^\s&]+"#
-        logTextView?.string = mode == 0
-            ? nodeEvidenceText()
-            : rows.isEmpty
-                ? "暂无相关事件。网络守护仍在运行，最近没有记录到该类型的日志。"
-                : rows.map { $0.replacingOccurrences(of: pattern, with: "$1[redacted]",
-                                                      options: .regularExpression) }.joined(separator: "\n")
-        if mode == 0 {
-            logTextView?.scrollToBeginningOfDocument(nil)
-        } else {
-            logTextView?.scrollToEndOfDocument(nil)
-        }
-        logSummary?.stringValue = mode == 0
-            ? "按节点优先展示 · 来源已标注 · 不读取聊天或订阅凭据"
-            : historical
-                ? "仅列出切换、连接失败及恢复事件 · 最近 220 条"
-                : "守护进程运行记录 · 最近 220 条 · 不包含聊天内容"
-    }
-
-    @objc private func changeLogMode(_ sender: NSPopUpButton) { refreshLogWindow() }
-    @objc private func refreshLog(_ sender: NSButton) { refreshLogWindow() }
-
-    @objc private func openLog() {
-        if let window = logWindow {
-            refreshLogWindow()
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 565),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                              backing: .buffered, defer: false)
-        window.title = "TunnelSentinel · GPT 节点与事件"
-        window.minSize = NSSize(width: 600, height: 360)
-        window.isReleasedWhenClosed = false
-        window.center()
-        guard let content = window.contentView else { return }
-        let background = NSVisualEffectView(frame: content.bounds)
-        background.material = .windowBackground
-        background.blendingMode = .withinWindow
-        background.autoresizingMask = [.width, .height]
-        content.addSubview(background)
-        let topTitle = label("GPT 节点与事件", font: .systemFont(ofSize: 22, weight: .semibold),
-                             color: .labelColor, frame: NSRect(x: 22, y: 508, width: 275, height: 31))
-        topTitle.autoresizingMask = [.minYMargin]
-        background.addSubview(topTitle)
-        let desc = label("节点身份、订阅迁移与恢复证据",
-                         font: .systemFont(ofSize: 12), color: .secondaryLabelColor,
-                         frame: NSRect(x: 22, y: 486, width: 340, height: 19))
-        desc.autoresizingMask = [.minYMargin]
-        background.addSubview(desc)
-        let picker = NSPopUpButton(frame: NSRect(x: 535, y: 499, width: 195, height: 27))
-        picker.addItems(withTitles: ["GPT 节点状态", "最近运行日志", "异常与切换"])
-        picker.target = self
-        picker.action = #selector(changeLogMode(_:))
-        picker.autoresizingMask = [.minXMargin, .minYMargin]
-        background.addSubview(picker)
-        logPicker = picker
-        let refresh = NSButton(frame: NSRect(x: 734, y: 499, width: 105, height: 28))
-        refresh.title = "刷新"
-        refresh.bezelStyle = .rounded
-        refresh.target = self
-        refresh.action = #selector(refreshLog(_:))
-        refresh.autoresizingMask = [.minXMargin, .minYMargin]
-        background.addSubview(refresh)
-
-        let scroll = NSScrollView(frame: NSRect(x: 22, y: 52, width: 816, height: 418))
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.borderType = .noBorder
-        scroll.wantsLayer = true
-        scroll.layer?.cornerRadius = 10
-        scroll.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
-        scroll.autoresizingMask = [.width, .height]
-        let textView = NSTextView(frame: scroll.bounds)
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.isRichText = false
-        textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        textView.textColor = .labelColor
-        textView.textContainerInset = NSSize(width: 14, height: 12)
-        scroll.documentView = textView
-        background.addSubview(scroll)
-        logTextView = textView
-        let footer = label("", font: .systemFont(ofSize: 11), color: .secondaryLabelColor,
-                           frame: NSRect(x: 22, y: 21, width: 810, height: 18))
-        footer.autoresizingMask = [.width]
-        background.addSubview(footer)
-        logSummary = footer
-        logWindow = window
-        refreshLogWindow()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
+    @objc private func openLog() { presentDashboard(tab: 2) }
 
     private func recoveryEnabled() -> Bool {
         let path = base.appendingPathComponent("config.json")
@@ -1184,45 +871,304 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         updateMonitorConfig { settings in settings["tunnel_recovery_enabled"]=enabled }
     }
 
-    @objc private func showDeepConnection() {
-        let diag=snapshot.deepConnection
-        let state=diag["state"] as? String ?? "pending_or_stale"
-        let targets=diag["targets"] as? [[String:Any]] ?? []
-        let names=["chatgpt_edge":"ChatGPT 公共入口", "chatgpt_websocket":"ChatGPT WebSocket 传输",
-                   "openai_api_tls":"OpenAI API TLS", "openai_auth_tls":"OpenAI 登录 TLS",
-                   "chatgpt_desktop_tls":"桌面端关联域名 TLS"]
-        let rows=targets.map { item -> String in
-            let key=item["name"] as? String ?? "?"
-            let code=item["http_code"] as? Int ?? 0
-            let state=item["state"] as? String ?? "unverified"
-            let ms=item["latency_ms"] as? Int
-            return "\(names[key] ?? key)：\(state)，HTTP \(code)\(ms.map { " · \($0)ms" } ?? "")"
-        }.joined(separator:"\n")
-        let stream=snapshot.codexStream
-        let count=stream["recent_counts"] as? [String:Int] ?? [:]
-        let failures=["broken_pipe","websocket_handshake","connection_reset"]
-            .map { "\($0)=\(count[$0] ?? 0)" }.joined(separator:"，")
-        let backend = snapshot.issues.filter { $0.title.contains("浏览器控制") }
-            .map { "\($0.count) 条浏览器后端异常" }.joined(separator:"，")
-        let dlg=NSAlert()
-        dlg.messageText="ChatGPT / Codex 分层诊断（只读）"
-        dlg.informativeText="""
-            当前代理：\(snapshot.proxyClient)
-            自动节点控制：\(snapshot.automaticControlEnabled ? "已开启" : "已关闭")
-            深度探测：\(state)
+    @objc private func showDeepConnection() { presentDashboard(tab: 1) }
 
-            \(rows.isEmpty ? "无新鲜结果（下一个检测周期自动补齐）" : rows)
+    // The menu stays deliberately short. Native switches remain real controls,
+    // not menu-item text pretending to be a toggle.
+    private var autoSwitchSupported: Bool {
+        snapshot.fresh && snapshot.routeManagement == "clash_observe_only" &&
+            snapshot.clashGroup == "TunnelSentinel-OpenAI" && snapshot.clashGroupType == "Selector"
+    }
 
-            Codex 日志：\(stream["state"] as? String ?? "无记录")
-            近 210 秒响应流错误：\(failures)
-            浏览器控制后端：\(backend.isEmpty ? "近 3 分钟无已分类报错" : backend)
+    private func switchMenuRow(_ title: String, subtitle: String,
+                               on: Bool, enabled: Bool, tag: Int) -> NSMenuItem {
+        let row = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 52))
+        row.addSubview(label(title, font: .systemFont(ofSize: 12.5, weight: .medium),
+                             color: .labelColor, frame: NSRect(x: 20, y: 26, width: 247, height: 18)))
+        row.addSubview(label(subtitle, font: .systemFont(ofSize: 10),
+                             color: .secondaryLabelColor, frame: NSRect(x: 20, y: 8, width: 247, height: 15)))
+        let control = NSSwitch(frame: NSRect(x: 284, y: 14, width: 43, height: 25))
+        control.state = on ? .on : .off
+        control.isEnabled = enabled
+        control.tag = tag
+        control.target = self
+        control.action = #selector(switchChanged(_:))
+        control.toolTip = enabled ? title : "该代理尚无已验证的自动控制方式，仅提供安全监测"
+        row.addSubview(control)
+        let item = NSMenuItem()
+        item.view = row
+        return item
+    }
 
-            HTTP 403/404/421 可能代表鉴权或路径拒绝，TLS 成功不等于登录有效。
-            此处不模拟登录、对话、网页点击，也不记录账号数据。
-            即使桌面域名 TLS 测试失败，也不能单独判定 Computer Use 故障。
-            """
-        dlg.addButton(withTitle:"关闭")
-        dlg.runModal()
+    @objc private func switchChanged(_ sender: NSSwitch) {
+        if sender.tag == 1 {
+            guard autoSwitchSupported else { sender.state = .off; return }
+            toggleAutomaticControl()
+        } else if sender.tag == 2 {
+            toggleTunnelRecovery()
+        }
+    }
+
+    @objc private func openDashboard() { presentDashboard(tab: 0) }
+    @objc private func dashboardTabChanged(_ sender: NSSegmentedControl) {
+        dashboardSelection = sender.selectedSegment
+        dashboardScroll?.contentView.scroll(to: NSPoint(x: 0, y: 0))
+        refreshDashboard()
+    }
+    @objc private func dashboardProbe(_ sender: NSButton) {
+        requestProbe()
+        refreshStatus()
+        refreshDashboard()
+    }
+    private func presentDashboard(tab: Int) {
+        dashboardSelection = tab
+        if let existing = dashboardWindow {
+            dashboardTabs?.selectedSegment = tab
+            refreshDashboard()
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 640),
+                              styleMask: [.titled, .closable, .miniaturizable],
+                              backing: .buffered, defer: false)
+        window.title = "TunnelSentinel · 监控中心"
+        window.isReleasedWhenClosed = false
+        window.center()
+        guard let root = window.contentView else { return }
+        let background = NSVisualEffectView(frame: root.bounds)
+        background.material = .windowBackground
+        background.blendingMode = .withinWindow
+        background.autoresizingMask = [.width, .height]
+        root.addSubview(background)
+        background.addSubview(label("监控中心", font: .systemFont(ofSize: 23, weight: .bold),
+                                    color: .labelColor, frame: NSRect(x: 28, y: 578, width: 330, height: 31)))
+        background.addSubview(label("看得懂的状态 · 真实来源 · 不干预代理", font: .systemFont(ofSize: 11.5),
+                                    color: .secondaryLabelColor, frame: NSRect(x: 28, y: 556, width: 440, height: 18)))
+        let refresh = NSButton(frame: NSRect(x: 502, y: 578, width: 88, height: 29))
+        refresh.title = "检查链路"
+        refresh.bezelStyle = .rounded
+        refresh.target = self
+        refresh.action = #selector(dashboardProbe(_:))
+        background.addSubview(refresh)
+        let tabs = NSSegmentedControl(labels: ["概览", "连接诊断", "节点与事件", "设置"],
+                                      trackingMode: .selectOne,
+                                      target: self, action: #selector(dashboardTabChanged(_:)))
+        tabs.frame = NSRect(x: 27, y: 510, width: 566, height: 32)
+        tabs.selectedSegment = tab
+        background.addSubview(tabs)
+        dashboardTabs = tabs
+        let scroll = NSScrollView(frame: NSRect(x: 27, y: 32, width: 568, height: 463))
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        background.addSubview(scroll)
+        dashboardScroll = scroll
+        background.addSubview(label("网络层检测不是 ChatGPT 登录或 Computer Use 功能测试。",
+                                    font: .systemFont(ofSize: 10.5),
+                                    color: .tertiaryLabelColor,
+                                    frame: NSRect(x: 29, y: 11, width: 560, height: 15)))
+        dashboardWindow = window
+        refreshDashboard()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func dashboardHeading(_ title: String, in doc: NSView, y: inout CGFloat) {
+        doc.addSubview(label(title, font: .systemFont(ofSize: 13.5, weight: .semibold),
+                             color: .labelColor, frame: NSRect(x: 8, y: y, width: 500, height: 22)))
+        y += 31
+    }
+
+    private func dashboardRow(_ title: String, explanation: String, value: String,
+                              tone: NSColor = .secondaryLabelColor,
+                              in doc: NSView, y: inout CGFloat) {
+        let card = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 64),
+                                      color: .controlBackgroundColor, cornerRadius: 9)
+        card.addSubview(label(title, font: .systemFont(ofSize: 12.5, weight: .medium),
+                              color: .labelColor, frame: NSRect(x: 14, y: 33, width: 312, height: 19)))
+        card.addSubview(label(explanation, font: .systemFont(ofSize: 10.5),
+                              color: .secondaryLabelColor,
+                              frame: NSRect(x: 14, y: 12, width: 520, height: 18)))
+        card.addSubview(label(value, font: .systemFont(ofSize: 11.5, weight: .semibold),
+                              color: tone, frame: NSRect(x: 328, y: 33, width: 207, height: 19),
+                              alignment: .right))
+        doc.addSubview(card)
+        y += 73
+    }
+
+    private func dashboardNote(_ content: String, in doc: NSView, y: inout CGFloat) {
+        let note = NSTextField(wrappingLabelWithString: content)
+        note.font = .systemFont(ofSize: 11)
+        note.textColor = .secondaryLabelColor
+        note.frame = NSRect(x: 10, y: y, width: 535, height: 43)
+        note.maximumNumberOfLines = 3
+        doc.addSubview(note)
+        y += 53
+    }
+
+    private func dashboardSwitch(_ title: String, description: String,
+                                 isOn: Bool, canEdit: Bool, tag: Int,
+                                 in doc: NSView, y: inout CGFloat) {
+        let card = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 72),
+                                      color: .controlBackgroundColor, cornerRadius: 9)
+        card.addSubview(label(title, font: .systemFont(ofSize: 13, weight: .medium),
+                              color: .labelColor, frame: NSRect(x: 15, y: 38, width: 418, height: 20)))
+        card.addSubview(label(description, font: .systemFont(ofSize: 10.5),
+                              color: .secondaryLabelColor,
+                              frame: NSRect(x: 15, y: 14, width: 458, height: 18)))
+        let control = NSSwitch(frame: NSRect(x: 489, y: 26, width: 46, height: 28))
+        control.tag = tag
+        control.target = self
+        control.action = #selector(switchChanged(_:))
+        control.state = isOn ? .on : .off
+        control.isEnabled = canEdit
+        card.addSubview(control)
+        doc.addSubview(card)
+        y += 83
+    }
+
+    private func probeLabel(_ key: String) -> String {
+        switch key {
+        case "chatgpt_edge": return "ChatGPT 公共入口"
+        case "chatgpt_websocket": return "ChatGPT WebSocket"
+        case "openai_api_tls": return "OpenAI API TLS"
+        case "openai_auth_tls": return "OpenAI 登录 TLS"
+        case "chatgpt_desktop_tls": return "桌面关联域名 TLS"
+        default: return key
+        }
+    }
+    private func probeState(_ state: String) -> (String, NSColor) {
+        switch state {
+        case "reachable", "upgrade_accepted": return ("可达", .systemGreen)
+        case "tls_reachable_auth_or_path_unverified", "tls_reachable_path_unverified", "tls_reachable_not_authenticated":
+            return ("传输可达", .systemBlue)
+        case "transport_failed": return ("连接失败", .systemOrange)
+        case "pending_or_stale": return ("等待更新", .secondaryLabelColor)
+        default: return ("待确认", .secondaryLabelColor)
+        }
+    }
+
+    private func refreshDashboard() {
+        guard let scroll = dashboardScroll, dashboardWindow != nil else { return }
+        let previousY = scroll.contentView.bounds.origin.y
+        let doc = DashboardFlippedView(frame: NSRect(x: 0, y: 0, width: 558, height: 1250))
+        var y: CGFloat = 8
+        let online = snapshot.fresh && snapshot.networkHealthy
+        let diagnostic = snapshot.deepConnection
+        let tests = diagnostic["targets"] as? [[String:Any]] ?? []
+        switch dashboardSelection {
+        case 0:
+            dashboardHeading("当前连接", in: doc, y: &y)
+            dashboardRow("系统代理", explanation: "macOS 当前监控对象，不代表机场节点名称",
+                         value: snapshot.proxyClient == "clash" ? "Clash Verge" : "Shadowrocket",
+                         in: doc, y: &y)
+            dashboardRow("ChatGPT 公共入口", explanation: "监测从当前代理到 ChatGPT 的公共 HTTPS 路径",
+                         value: online ? "基础连通正常" : "需要检查", tone: online ? .systemGreen : .systemOrange,
+                         in: doc, y: &y)
+            dashboardRow("出口位置", explanation: "出口 IP 的地理观测，不是订阅中的节点名称",
+                         value: snapshot.egressObserved ? shortEgress : "未获得数据", in: doc, y: &y)
+            dashboardHeading("运行方式", in: doc, y: &y)
+            dashboardRow("代理控制", explanation: "健康检查照常运行，不会自动更换节点",
+                         value: snapshot.automaticControlEnabled ? "已开启" : "仅监测", tone: .systemBlue,
+                         in: doc, y: &y)
+            dashboardRow("Codex", explanation: "流连接错误来自只读本地日志，不包含聊天内容",
+                         value: (snapshot.codexStream["state"] as? String) == "ok" ? "日志可读取" : "暂无有效日志",
+                         in: doc, y: &y)
+            dashboardNote("需要查看某个服务的 TLS、WebSocket 或实际规则细节？切换到上方“连接诊断”和“节点与事件”。", in: doc, y: &y)
+        case 1:
+            dashboardHeading("ChatGPT · OpenAI", in: doc, y: &y)
+            if tests.isEmpty {
+                dashboardNote("分层探测正在等待首次结果。后台每约 5 分钟更新一次，不会登录账号或干预代理。", in: doc, y: &y)
+            } else {
+                for test in tests {
+                    let key = test["name"] as? String ?? "?"
+                    let state = test["state"] as? String ?? ""
+                    let result = probeState(state)
+                    let code = test["http_code"] as? Int ?? 0
+                    let ms = test["latency_ms"] as? Int ?? 0
+                    let explanation = "匿名探测 · HTTP \(code == 0 ? "—" : String(code)) · \(ms)ms"
+                    dashboardRow(probeLabel(key), explanation: explanation, value: result.0,
+                                 tone: result.1, in: doc, y: &y)
+                }
+            }
+            dashboardHeading("Codex · 浏览器", in: doc, y: &y)
+            let stream = snapshot.codexStream
+            let counts = stream["recent_counts"] as? [String:Int] ?? [:]
+            let total = (counts["broken_pipe"] ?? 0) + (counts["websocket_handshake"] ?? 0) + (counts["connection_reset"] ?? 0)
+            dashboardRow("Codex 响应流", explanation: "最近 210 秒内 broken pipe / 握手 / 连接重置",
+                         value: (stream["state"] as? String) == "ok" ? "\(total) 次断流" : "日志不可用",
+                         tone: total > 0 ? .systemOrange : .secondaryLabelColor, in: doc, y: &y)
+            let browserCount = snapshot.issues.filter { $0.title.contains("浏览器控制") }.reduce(0) { $0 + $1.count }
+            dashboardRow("浏览器控制后端", explanation: "近 3 分钟已分类日志事件；非真实操作测试",
+                         value: "\(browserCount) 条相关提示", in: doc, y: &y)
+            dashboardNote("“传输可达”只表示 TLS/HTTP 有响应，不能证明登录、Codex 长连接或 Computer Use 具体操作成功。", in: doc, y: &y)
+            dashboardHeading("其他 AI 网站 · 公开探测", in: doc, y: &y)
+            if !snapshot.aiMatrixFresh { dashboardNote("AI 分流矩阵约 15 分钟更新一次，当前没有新鲜结果。", in: doc, y: &y) }
+            for site in snapshot.aiMatrixFresh ? snapshot.aiMatrixSites : [] {
+                dashboardRow(site.name, explanation: site.domain + (site.location.isEmpty ? "" : " · " + site.location),
+                             value: site.status == "reachable" ? "可达 · \(site.ms)ms" : "未确认",
+                             tone: site.status == "reachable" ? .systemGreen : .secondaryLabelColor,
+                             in: doc, y: &y)
+            }
+        case 2:
+            dashboardHeading("节点识别 · 按证据显示", in: doc, y: &y)
+            if snapshot.routeManagement == "clash_observe_only" {
+                dashboardRow("Clash 策略组选中", explanation: "Mihomo 官方 API 当前组内选择",
+                             value: snapshot.clashSelectedNode.isEmpty ? "暂无读取" : snapshot.clashSelectedNode,
+                             in: doc, y: &y)
+                dashboardRow("GPT 实际请求", explanation: "只有 Mihomo 活跃连接链能确认请求经过的节点",
+                             value: snapshot.backendVerified ? snapshot.actualBackendName : "未见可确认请求",
+                             in: doc, y: &y)
+            } else {
+                dashboardRow("Shadowrocket 全局选择", explanation: "仅作为全局节点记录，不表示 GPT 分组的选路",
+                             value: globalNode, in: doc, y: &y)
+                dashboardRow("GPT 实际请求节点", explanation: "原生代理日志读取未启用；不会定时读取不存在的数据",
+                             value: snapshot.backendVerified ? snapshot.actualBackendName : "无可靠当前数据",
+                             in: doc, y: &y)
+                dashboardNote("旧 OpenAI-Resilience 只是历史配置名。你已关闭自动控制，程序不会打开 Shadowrocket 分组编辑器；也无法保证锁屏状态读取。", in: doc, y: &y)
+            }
+            dashboardHeading("网络出口与事件", in: doc, y: &y)
+            dashboardRow("本次观测出口", explanation: "Cloudflare 公共 trace，不能推断实际机场节点",
+                         value: shortEgress, in: doc, y: &y)
+            if snapshot.observedEgressHistory.isEmpty {
+                dashboardNote("近期没有经过两次成功验证的出口地区变化事件。", in: doc, y: &y)
+            }
+            for event in snapshot.observedEgressHistory.suffix(5).reversed() {
+                let before = event["geo_before"] as? String ?? "未知"
+                let after = event["geo_after"] as? String ?? "未知"
+                let when = event["observed_at"] as? String ?? ""
+                dashboardRow("出口地区变化", explanation: when, value: "\(before) → \(after)", in: doc, y: &y)
+            }
+            dashboardHeading("客户端事件", in: doc, y: &y)
+            if snapshot.issues.isEmpty { dashboardNote("近 3 分钟没有被分类为异常的客户端日志。", in: doc, y: &y) }
+            for issue in snapshot.issues.prefix(5) {
+                dashboardRow(issue.title, explanation: "客户端日志分类，不会直接触发节点切换",
+                             value: "\(issue.count) 条", tone: .systemOrange, in: doc, y: &y)
+            }
+        default:
+            dashboardHeading("自动化安全设置", in: doc, y: &y)
+            dashboardSwitch("自动节点控制", description: autoSwitchSupported ? "仅允许已验证的 GPT 独立分组" : "Shadowrocket 当前组无法证实，不开放自动切换",
+                            isOn: snapshot.automaticControlEnabled, canEdit: autoSwitchSupported,
+                            tag: 1, in: doc, y: &y)
+            dashboardSwitch("隧道掉线重连", description: "与切换节点不同；仅在本地代理意外断开时尝试重连",
+                            isOn: snapshot.tunnelRecoveryEnabled,
+                            canEdit: snapshot.proxyClient == "shadowrocket",
+                            tag: 2, in: doc, y: &y)
+            dashboardNote("以上是真正的 macOS 系统滑动开关。不会因为打开监控中心就更改你的代理节点、规则或订阅。", in: doc, y: &y)
+            dashboardHeading("数据来源与限制", in: doc, y: &y)
+            dashboardRow("公共出口", explanation: "通过当前代理发起定时 HTTPS 探测",
+                         value: "正在监测", in: doc, y: &y)
+            dashboardRow("分组节点", explanation: "当前 Shadowrocket 未提供可持续验证的请求级节点",
+                         value: "不作为实时状态", in: doc, y: &y)
+            dashboardRow("Computer Use", explanation: "仅监测传输和已有日志；不做自动网页点击",
+                         value: "需要实际操作验收", in: doc, y: &y)
+        }
+        doc.frame = NSRect(x: 0, y: 0, width: 558, height: max(463, y + 18))
+        scroll.documentView = doc
+        let maxY = max(CGFloat(0), doc.bounds.height - scroll.contentView.bounds.height)
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: min(previousY, maxY)))
+        scroll.reflectScrolledClipView(scroll.contentView)
     }
 
     @objc private func toggleRecovery() {

@@ -127,3 +127,12 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [ ] P1 · 下次订阅实际更换时验证组绑定、规则匹配和 Shadowrocket UI 状态；当前无法通过公开 API 保证自动重绑定
 - [ ] P1 · 无需前台界面的 Shadowrocket 组读取和锁屏切换仍不可用，禁止标为已交付
 - [ ] P1 · 出现真正的 Codex websocket 业务故障时交叉核对 SQL 日志、TLS/WSS 探测与浏览器后端日志；公开 200 不等于业务可用
+
+### 2026-10-26 UI v2
+- [x] 340pt 精简主菜单、监控中心单入口、原生 NSSwitch 两项控制
+- [x] 分层诊断、AI 分流、节点事件集中到四标签结构化窗口，取代长文本弹窗
+- [x] 未验证 Shadowrocket GPT 分组移除主界面常驻占位，主信息只显示公共出口与只读模式
+- [x] 用户当前 Shadowrocket 无可靠分组级 AX 数据，不再显示“等待读取”；单独解释信息来源与可用限制
+- [x] 5 秒状态刷新保持监控中心当前滚动位置；标签切换恢复顶部
+- [x] Mac 实际打开各 UI 标签截屏，并通过 Python 回归与 Swift typecheck
+- [ ] 尚未完整验收的功能仍包括锁屏原生节点探测、订阅迁移、已登录的 Computer Use 实际网页操作；不可用功能继续保持不可操作

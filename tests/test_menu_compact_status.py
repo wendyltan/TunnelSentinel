@@ -30,7 +30,9 @@ class MenuCompactStatusTests(unittest.TestCase):
         card = menu.split('private func menuCard() -> NSView {',1)[1].split('private func menuItem(',1)[0]
         self.assertIn('let egressTitle = clashMode', card)
         self.assertIn(': observedEgress', card)
-        self.assertIn('nativeGroupUIRecent ? snapshot.nativeGroupUINode',card)
+        self.assertIn('仅监测 · 不自动更换节点',card)
+        self.assertNotIn('GPT 分组节点 · 暂无近期读取',card)
+        self.assertNotIn('snapshot.nativeGroupUINode',card)
         self.assertNotIn('snapshot.backendLastLoggedName',card)
         self.assertNotIn('snapshot.userLastVerifiedNode',card)
 

@@ -71,7 +71,13 @@ def scan(proxy:str)->dict:
         outcomes=list(pool.map(lambda item:test_target(item,proxy),TARGETS))
     states={x['name']:x['state'] for x in outcomes}
     # A desktop host's anonymous TLS handshake is NOT a verdict on Computer Use.
+    try:
+        from codex_business_observer import scan as observe_real_codex
+        real_codex = observe_real_codex()
+    except (ImportError,RuntimeError,OSError):
+        real_codex = {'source':'codex_client_read_only_sqlite','state':'unavailable','routes':[]}
     return {'source':'bounded_public_tls_probes','state':'completed',
+            'real_codex_client':real_codex,
             'checked_at':int(time.time()),'targets':outcomes,
             'public_edge_ok':states.get('chatgpt_edge')=='reachable',
             'websocket_transport_ok':states.get('chatgpt_websocket')=='upgrade_accepted',

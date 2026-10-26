@@ -307,3 +307,15 @@ swiftc -parse-as-library -O -framework AppKit \
 - 按用户现有设置保留 `tunnel_recovery_enabled=true`（用户主动打开）、`automatic_control_enabled=false`、`codex_auto_failover_enabled=false`、`clash_auto_failover_enabled=false`。此更改不修改 Shadowrocket 节点、订阅、分组，不打开自动节点故障转移，不触发代理重连测试。
 
 补充：当 `curl` 已取得 HTTP 状态码但随后传输异常退出，诊断单独标记 `http_response_with_transfer_error`（界面“HTTP响应后中断”），与完全未建立 TLS/HTTP 的 `transport_failed` 区分。WebSocket `websocket_transport_ok` 同时要求 `curl` 成功结束与 HTTP 101，避免 403/404 或中途断流造成伪成功。
+
+### 2026-10-26 21:25–21:50 · Codex 真业务元数据与 Shadowrocket 当前配置规则核验
+
+本次修正对“网络探测”的定义：官方 [ChatGPT 网络建议](https://help.openai.com/en/articles/9247338-network-recommendations-for-chatgpt-errors-on-web-and-apps)只说明必须允许哪些域名及标准 WebSocket 握手，不保证无登录凭据的 `GET /` 模拟等于真实业务。官方 [openai/codex client.rs](https://github.com/openai/codex/blob/main/codex-rs/core/src/client.rs) 表明 Codex 按模型提供者选择 Responses WebSocket 或 HTTP fallback，并使用 `OpenAI-Beta`、安装与路由相关请求头；服务端需要会话鉴权。无关 Token、Account-ID 与私有协议负载不得被 TunnelSentinel 复制或记录。
+
+- 新增 `scripts/codex_business_observer.py`：对 Codex 自己的 `~/.codex/logs_2.sqlite` 用 **只读 SQLite 模式**统计最近 30 分钟经允许列出的真实客户端 HTTP 请求（方法、`/backend-api/codex/models|responses|usage` 路径、HTTP 状态、次数及最近时间），以及 `codex_api::endpoint::responses_websocket` 明确记录的 `successfully connected to websocket` 事件计数。不读取或输出响应内容、Token、Cookie、Account ID、用户对话或未知 URL。与 `scripts/gpt_deep_probe.py` 六个**匿名合成**传输测试不同，在监控中心分成“真实客户端记录”和“公开连通性探测”；客户日志不等于完整请求成功，也无法替代 Computer Use 真实功能。
+- 当前 Shadowrocket 2.2.92 确认 Mac 系统代理 `127.0.0.1:1082`；通过 **官方 App「配置 → 测试规则」**实际输入 `chatgpt.com`、`ws.chatgpt.com`、`api.openai.com`、`desktop.chat.openai.com`：前两者匹配 `DOMAIN-SUFFIX,chatgpt.com,PROXY`，后两者 `DOMAIN-SUFFIX,openai.com,PROXY`，当时规则测试显示 `🇺🇸 USA Seattle 07`。**并未匹配配置里可能存在的 `AI` 组**；此结果是配置规则核验，不代表实际所有 HTTPS/TLS 连接都经该节点，不代表以后更换配置仍相同。
+- 新增 `menubar/TunnelSentinelShadowrocketAudit.swift`：用户可在“节点与事件”**主动点击**“核验 Shadowrocket 当前配置规则”，用 macOS Accessibility 驱动现有 Shadowrocket 2.2.92 内建“测试规则”，对四个公开 OpenAI 域名获取策略名和规则解析节点；无须读受保护 App Group、**没有写死 AI 分组名称或机场节点**，不会操作连接开关、订阅或切换节点。只保存来源、时间、域名、策略名、规则类别与规则测试当前解析节点，最多 10 分钟作为“最近核验”证据；不假称请求级实时采集。明确说明按需核验时会短暂切到 Shadowrocket 并恢复其他应用焦点；后台不会每隔几秒操作别的 App。
+- 监控中心右上角与菜单主操作重复、且并不能保证强制业务探测更新的“检查链路”按钮已移除。Shadowrocket 节点详情不再显示“GPT 实际请求节点 / 原生代理日志读取未启用”的无效卡，而是展示有来源的最新规则核验（或不显示匹配数据）及一次性核验入口。
+- 只读总闸门保持关闭；`tunnel_recovery_enabled=true` 为用户在前轮主动打开的当前独立设置，本次未修改。`codex_auto_failover_enabled=false`、`clash_auto_failover_enabled=false` 均不变。
+
+**原生功能实机验证（2026-10-26 21:52）：** 已在安装后签名的 TunnelSentinel.app 中实际点击“核验 Shadowrocket 当前配置规则”，`shadowrocket_rule_audit.json` 生成 `verified_rule_matches`，四个目标均 `DOMAIN-SUFFIX` → `PROXY` → 当时 `USA Seattle 07`，监控中心卡片显示正确、布局可读。实际业务 `GET /backend-api/codex/models HTTP 200` 由 Codex 客户端写入的 SQLite 日志提供，和匿名 `GET /` 完全分开。此功能既不自动轮询 Shadowrocket 图形界面，也不读取 TLS 明文或用户令牌。

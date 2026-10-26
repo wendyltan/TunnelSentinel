@@ -19,6 +19,7 @@ mkdir -p "$staged_app/Contents/MacOS" "$staged_app/Contents/Resources"
     "$project_dir/menubar/TunnelSentinelMenu.swift" \
     "$project_dir/menubar/TunnelSentinelNativeRoute.swift" \
     "$project_dir/menubar/TunnelSentinelRecovery.swift" \
+    "$project_dir/menubar/TunnelSentinelShadowrocketAudit.swift" \
     -o "$staged_app/Contents/MacOS/TunnelSentinelMenu"
 /bin/cp "$project_dir/branding/AppIcon.icns" "$staged_app/Contents/Resources/AppIcon.icns"
 /bin/cp "$project_dir/branding/MenuBarTemplate.png" "$staged_app/Contents/Resources/MenuBarTemplate.png"

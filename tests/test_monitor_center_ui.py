@@ -24,5 +24,7 @@ class MonitorCenterTests(unittest.TestCase):
   self.assertIn('DashboardFlippedView(',s)
   self.assertIn('没有可确认请求',s.replace('未见可确认请求','没有可确认请求'))
   self.assertIn('Shadowrocket 全局选择',s)
-  self.assertIn('无法保证锁屏状态读取',s)
+  self.assertIn('最多保留 10 分钟',s)
+  self.assertNotIn('dashboardProbe(_:)',s)
+  self.assertNotIn('原生代理日志读取未启用；不会定时读取不存在的数据',s)
 if __name__=='__main__':unittest.main()

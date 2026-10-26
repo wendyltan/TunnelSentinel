@@ -35,6 +35,7 @@ class HonestMethodContract(unittest.TestCase):
   self.assertIn('模拟 GET / + Upgrade（无登录）',menu)
   self.assertIn('Codex WebSocket 域名',menu)
   self.assertIn('仅 HTTP 有响应',menu)
-  self.assertIn('本机只读 SQLite 日志',menu)
+  self.assertIn('取自 Codex 只读日志',menu)
+  self.assertIn('真实客户端记录',menu)
 
 if __name__=='__main__': unittest.main()

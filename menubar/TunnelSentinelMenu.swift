@@ -143,6 +143,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     private var dashboardTabs: NSSegmentedControl?
     private var dashboardScroll: NSScrollView?
     private var dashboardSelection = 0
+    private var ruleAuditRunning = false
     private var configUpdateBusy = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -962,10 +963,37 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         dashboardScroll?.contentView.scroll(to: NSPoint(x: 0, y: 0))
         refreshDashboard()
     }
-    @objc private func dashboardProbe(_ sender: NSButton) {
-        requestProbe()
-        refreshStatus()
+    @objc private func auditShadowrocketRules(_ sender: NSButton) {
+        guard snapshot.proxyClient == "shadowrocket", !ruleAuditRunning else { return }
+        ruleAuditRunning = true
         refreshDashboard()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let report = ShadowrocketRuleAuditor.run()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.ruleAuditRunning = false
+                if let content = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted]) {
+                    let path = self.base.appendingPathComponent("shadowrocket_rule_audit.json")
+                    try? content.write(to: path, options: .atomic)
+                }
+                self.refreshDashboard()
+                if (report["state"] as? String) == "tester_unavailable" ||
+                   (report["state"] as? String) == "not_authorized" {
+                    self.showError("Shadowrocket 自带的规则测试界面无法读取。已保持现有代理设置不变。")
+                }
+            }
+        }
+    }
+
+    private func recentNativeRuleAudit() -> [[String:String]] {
+        let file = base.appendingPathComponent("shadowrocket_rule_audit.json")
+        guard let data = try? Data(contentsOf: file),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String:Any],
+              object["source"] as? String == "shadowrocket_native_rule_tester",
+              let checkedAt = object["checked_at"] as? Int,
+              (0...600).contains(Int(Date().timeIntervalSince1970) - checkedAt),
+              let rows = object["rules"] as? [[String:String]] else { return [] }
+        return rows.filter { !$0["host", default: ""].isEmpty && !$0["policy", default: ""].isEmpty }
     }
     private func presentDashboard(tab: Int) {
         dashboardSelection = tab
@@ -992,12 +1020,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                                     color: .labelColor, frame: NSRect(x: 28, y: 578, width: 330, height: 31)))
         background.addSubview(label("看得懂的状态 · 真实来源 · 不干预代理", font: .systemFont(ofSize: 11.5),
                                     color: .secondaryLabelColor, frame: NSRect(x: 28, y: 556, width: 440, height: 18)))
-        let refresh = NSButton(frame: NSRect(x: 502, y: 578, width: 88, height: 29))
-        refresh.title = "检查链路"
-        refresh.bezelStyle = .rounded
-        refresh.target = self
-        refresh.action = #selector(dashboardProbe(_:))
-        background.addSubview(refresh)
         let tabs = NSSegmentedControl(labels: ["概览", "连接诊断", "节点与事件", "设置"],
                                       trackingMode: .selectOne,
                                       target: self, action: #selector(dashboardTabChanged(_:)))
@@ -1148,7 +1170,28 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                                  tone: display.1, in: doc, y: &y)
                 }
             }
-            dashboardHeading("Codex · 浏览器", in: doc, y: &y)
+            dashboardHeading("Codex 真实客户端记录", in: doc, y: &y)
+            let real = diagnostic["real_codex_client"] as? [String:Any] ?? [:]
+            let actualRoutes = real["routes"] as? [[String:Any]] ?? []
+            if actualRoutes.isEmpty {
+                dashboardNote("最近 30 分钟没有可确认的 Codex 实际业务 HTTP 请求记录。监控不会读取账号 Token 或自动发送业务 POST。", in: doc, y: &y)
+            }
+            for actual in actualRoutes.prefix(4) {
+                let method = actual["method"] as? String ?? "?"
+                let path = actual["path"] as? String ?? ""
+                let status = actual["status"] as? Int ?? 0
+                let count = actual["count"] as? Int ?? 0
+                dashboardRow("真实 Codex \(method)",
+                             explanation: path + " · 取自 Codex 只读日志",
+                             value: "HTTP \(status) · \(count) 次",
+                             tone: status >= 200 && status < 300 ? .systemGreen : .systemOrange,
+                             in: doc, y: &y)
+            }
+            let sockets = real["websocket"] as? [String:Any] ?? [:]
+            let connected = sockets["successful_connects"] as? Int ?? 0
+            dashboardRow("真实 Codex WS 连接日志", explanation: "30 分钟内客户端明确记录成功建立 WebSocket 的次数",
+                         value: "\(connected) 次", in: doc, y: &y)
+            dashboardHeading("Codex · 浏览器异常", in: doc, y: &y)
             let stream = snapshot.codexStream
             let counts = stream["recent_counts"] as? [String:Int] ?? [:]
             let total = (counts["broken_pipe"] ?? 0) + (counts["websocket_handshake"] ?? 0) + (counts["connection_reset"] ?? 0)
@@ -1159,7 +1202,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             dashboardRow("浏览器控制后端日志", explanation: "近 3 分钟已分类日志事件；未主动执行网页操作",
                          value: "\(browserCount) 条相关提示", in: doc, y: &y)
             dashboardNote("上方均为无登录的模拟探测，并非客户端实际接口请求。WebSocket 必须返回 101 才算成功升级；HTTP 403/404/421 仅表明服务器有响应。", in: doc, y: &y)
-            dashboardNote("Codex 断流取自本机只读 SQLite 日志；浏览器控制异常来自客户端日志分类，不是独立的 Computer Use 业务拨测。", in: doc, y: &y)
+            dashboardNote("上方真实客户端记录来自 Codex 自己写入的 SQLite 元数据；没有消息内容、身份令牌和额外请求。浏览器控制异常仍只是被动日志分类。", in: doc, y: &y)
             dashboardHeading("其他 AI 网站 · 公开探测", in: doc, y: &y)
             if !snapshot.aiMatrixFresh { dashboardNote("AI 分流矩阵约 15 分钟更新一次，当前没有新鲜结果。", in: doc, y: &y) }
             for site in snapshot.aiMatrixFresh ? snapshot.aiMatrixSites : [] {
@@ -1180,10 +1223,27 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             } else {
                 dashboardRow("Shadowrocket 全局选择", explanation: "仅作为全局节点记录，不表示 GPT 分组的选路",
                              value: globalNode, in: doc, y: &y)
-                dashboardRow("GPT 实际请求节点", explanation: "原生代理日志读取未启用；不会定时读取不存在的数据",
-                             value: snapshot.backendVerified ? snapshot.actualBackendName : "无可靠当前数据",
-                             in: doc, y: &y)
-                dashboardNote("旧 OpenAI-Resilience 只是历史配置名。你已关闭自动控制，程序不会打开 Shadowrocket 分组编辑器；也无法保证锁屏状态读取。", in: doc, y: &y)
+                dashboardHeading("Shadowrocket 当前规则核验", in: doc, y: &y)
+                let ruleRows = recentNativeRuleAudit()
+                if ruleRows.isEmpty {
+                    dashboardNote("没有最近 10 分钟的配置规则核验结果。点击下方按钮，可以让 Shadowrocket 当前配置自行判断目标域名命中哪个策略。", in: doc, y: &y)
+                }
+                for rule in ruleRows {
+                    let host = rule["host"] ?? ""
+                    let policy = rule["policy"] ?? ""
+                    let selected = rule["selected"] ?? ""
+                    dashboardRow(host, explanation: "Shadowrocket 规则测试 · \(rule["rule_type"] ?? "") · 仅是规则匹配，不是抓取实际请求",
+                                 value: selected.isEmpty ? policy : "\(policy) · \(selected)", in: doc, y: &y)
+                }
+                let button=NSButton(frame: NSRect(x: 4, y: y, width: 275, height: 30))
+                button.title=ruleAuditRunning ? "正在通过 Shadowrocket 核验…" : "核验 Shadowrocket 当前配置规则"
+                button.bezelStyle = .rounded
+                button.isEnabled = !ruleAuditRunning
+                button.target = self
+                button.action = #selector(auditShadowrocketRules(_:))
+                doc.addSubview(button)
+                y += 39
+                dashboardNote("仅在你主动点击时短暂切换到 Shadowrocket 的“测试规则”界面；不读取账号凭证、不修改配置、不自动轮询。规则结果最多保留 10 分钟。", in: doc, y: &y)
             }
             dashboardHeading("网络出口与事件", in: doc, y: &y)
             dashboardRow("本次观测出口", explanation: "Cloudflare 公共 trace，不能推断实际机场节点",

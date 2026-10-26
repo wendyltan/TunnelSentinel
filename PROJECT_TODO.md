@@ -145,3 +145,14 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [x] 显示请求层级：公开 GET / 根路径不等于已登录业务 API，请勿混淆 TLS 探测与真实 Computer Use
 - [ ] 需用户在正常工作时观察下一次 NSSwitch 实际点击体验；本轮不为模拟卡顿故意反复开关隧道重连
 - [ ] 需后续有获授权的业务级测试证据才能标记实际 Codex 长流、Computer Use 为成功
+
+### 2026-10-26 21:25 · 真业务证据与规则读取
+- [x] Codex 30min 已发生的允许列出后端 GET/POST、状态码和真实 WebSocket 成功连接事件，纯本机只读元数据聚合
+- [x] AI 分流读取改走 Shadowrocket 官方原生「测试规则」按需核验，避免硬编码 AI 组与机场节点，最多 10min 作为近期证据
+- [x] 主窗口移除重复“检查链路”，移除 Shadowrocket 无效“GPT 实际请求节点”的空卡
+- [x] 边界：不会读取密钥、原生 App 私有容器，不会无用户点击后台操作 Shadowrocket UI，不会自动修改代理
+- [ ] 用户实际点击新“核验规则”按钮后检查 macOS Accessibility 授权和操作焦点恢复行为
+- [ ] 切换 Shadowrocket 规则配置与更新订阅后进行第二次测试，确认动态策略匹配内容变化，不能把上次核验冒充实时请求
+- [ ] 未来若 Shadowrocket 提供可信只读 API/请求日志适配，再增加后台实时客户端请求节点识别（目前无）
+- [x] 签名 App 中实机点击新原生规则核验、生成 4 域名 PROXY 证据并检查可读卡片截图
+- [x] 当前 Shadowrocket 系统代理、自动节点开关、隧道重连设定均未修改；源测试和签名核查通过

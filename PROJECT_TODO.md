@@ -102,3 +102,13 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [ ] P1：补充可撤销的受控组内真实切换、候选 API readback 与故障回滚，在 user-approved 维护窗口做首次真实验收
 - [ ] P1：确认 macOS 关闭系统代理、改开 Clash TUN、或重新切回 Shadowrocket 后的恢复流程；当前仅识别系统 HTTP(S) 代理接管
 - [ ] 用户视觉验收：Clash 节点显示、来源可信度、宽度 340pt 的菜单栏布局
+
+### 2026-10-26 Clash 真正自动故障转移
+- [x] 建立独立 `TunnelSentinel-OpenAI` 组和优先域名分流，避免改动共享 `Proxies`
+- [x] Mihomo 真实重载、控制组回读、ChatGPT 请求链核实
+- [x] 真实切换 Japan 02 并安全恢复原节点的 canary 验收
+- [x] Codex 新鲜流错误触发守护调用、限频/隔离/每日阈值及原生 API 只写专用组
+- [x] 生产模式已启用，单独菜单开关可关闭与重启监测服务
+- [ ] 在下一次**自然发生的 Codex Broken pipe** 事件中验收实际故障恢复和登录后流式业务成功证据；当前只证明路由层与公共出口
+- [ ] 不同订阅自动更新／订阅更换时确认 Clash Verge 增强配置重建过程，验证对缺失成员 fail-closed 的提示
+- [ ] 睡眠/唤醒和锁屏下自动切换端到端验证；持续记录节点变更和真实业务成功率

@@ -64,6 +64,22 @@ class ClashObserverTests(unittest.TestCase):
         self.assertEqual(x['active_request_node'],'')
         self.assertEqual(x['active_request_chain'],[])
 
+    def test_dedicated_group_wins_and_shared_ai_is_unchanged(self):
+        p={'AI':{'type':'Selector','now':'Proxies','all':['Proxies','nodeA']},
+           'Proxies':{'type':'Selector','now':'nodeA','all':['nodeA','nodeB']},
+           'TunnelSentinel-OpenAI':{'type':'Selector','now':'nodeB','all':['nodeA','nodeB']},
+           'nodeA':{'type':'AnyTLS','history':[{'delay':60}]},
+           'nodeB':{'type':'AnyTLS','history':[{'delay':100}]}}
+        c={'connections':[{'metadata':{'host':'ws.chatgpt.com'},'chains':['nodeB','TunnelSentinel-OpenAI']},
+                          {'metadata':{'host':'perplexity.ai'},'chains':['nodeA','Proxies','AI']}]}
+        out=clash.summarize({'mode':'rule'},{'proxies':p},c)
+        self.assertEqual(out['ai_group'],'TunnelSentinel-OpenAI')
+        self.assertEqual(out['selected_node'],'nodeB')
+        self.assertEqual(out['active_request_node'],'nodeB')
+        self.assertEqual(out['active_gpt_connections'],1)
+        self.assertEqual(out['candidate_count'],2)
+        self.assertEqual(out['scope'],'dedicated_openai_policy')
+
     def test_subscriptions_change_does_not_require_hardcoded_nodes(self):
         values={'new-branch':{'type':'Trojan','history':[{'delay':350}]}}
         values['AI']={'type':'Selector','now':'Proxies'}

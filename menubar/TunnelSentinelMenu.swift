@@ -39,6 +39,11 @@ private struct Snapshot {
     var clashCandidateCount = 0
     var clashEligibleCount = 0
     var clashDryRunCandidate = ""
+    var clashAutoSwitchMode = "simulation_only"
+    var clashFailoverState = ""
+    var clashFailoverFrom = ""
+    var clashFailoverTo = ""
+    var clashFailoverActions = 0
     var egressObserved = false
     var egressIP = ""
     var egressColo = ""
@@ -212,6 +217,13 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         next.routeManagement = values["route_management"] as? String ?? "legacy_external_select"
         next.nativeFallbackGroup = values["native_fallback_group"] as? String ?? ""
         next.proxyClient = values["proxy_client"] as? String ?? "shadowrocket"
+        next.clashAutoSwitchMode = values["clash_auto_switch_mode"] as? String ?? "simulation_only"
+        if let failover = values["clash_failover_status"] as? [String:Any] {
+            next.clashFailoverState = failover["state"] as? String ?? ""
+            next.clashFailoverFrom = failover["from"] as? String ?? ""
+            next.clashFailoverTo = failover["to"] as? String ?? ""
+            next.clashFailoverActions = failover["actions_today"] as? Int ?? 0
+        }
         if let clash = values["clash_observation"] as? [String:Any] {
             next.clashMode = clash["mode"] as? String ?? ""
             next.clashGroup = clash["ai_group"] as? String ?? ""
@@ -724,6 +736,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         let fingerprint = [
             headline, detail, liveNode ?? "", snapshot.checkedNode, snapshot.checkedAt,
             snapshot.proxyClient,snapshot.clashMode,snapshot.clashGroup,snapshot.clashParent,
+            snapshot.clashAutoSwitchMode,snapshot.clashFailoverState,
+            snapshot.clashFailoverFrom,snapshot.clashFailoverTo,String(snapshot.clashFailoverActions),
             snapshot.clashSelectedNode,String(snapshot.clashActiveConnections),
             String(snapshot.clashCandidateCount),String(snapshot.clashEligibleCount),
             String(snapshot.fresh), String(snapshot.networkHealthy),
@@ -783,8 +797,14 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("查看 GPT 节点状态与事件", symbol: "list.bullet.rectangle", action: #selector(openLog)))
         let recovery = IntegratedRecovery.shared.summary
         if snapshot.routeManagement == "clash_observe_only" {
-            menu.addItem(menuItem("Clash 故障转移 · 模拟研究（无修改）", symbol: "shield-check",
+            menu.addItem(menuItem(snapshot.clashAutoSwitchMode == "live_guarded"
+                                  ? "Clash 自动故障转移 · 已启用"
+                                  : "Clash 自动故障转移 · 未启用", symbol: "shield-check",
                                   action: #selector(showClashRecoveryPlan)))
+            menu.addItem(menuItem(snapshot.clashAutoSwitchMode == "live_guarded"
+                                  ? "关闭 Clash 自动切换"
+                                  : "开启 Clash 自动切换", symbol: "arrow.triangle.2.circlepath",
+                                  action: #selector(toggleClashRecovery)))
         } else {
             menu.addItem(menuItem("节点故障转移 · \(recovery)", symbol: "arrow.triangle.2.circlepath",
                                   action: #selector(openRecoverySettings)))
@@ -898,9 +918,11 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
 
                 当前候选：\(snapshot.clashCandidateCount)
                 有近期延迟记录：\(snapshot.clashEligibleCount)
-                故障切换：离线模拟，尚未投入真实节点切换
-                共享 AI → Proxies 不能直接修改 Proxies，否则可能影响其他业务。
-                下一阶段需独立 OpenAI 组，并经过规则覆盖与业务恢复验证。
+                故障切换：\(snapshot.clashAutoSwitchMode == "live_guarded" ? "真实自动切换已启用" : "只读监测")
+                最近一次控制器检查：\(snapshot.clashFailoverState.isEmpty ? "暂无记录" : snapshot.clashFailoverState)
+                GPT 专用组：TunnelSentinel-OpenAI（不修改共享 AI / Proxies）
+                触发：最近210秒内3次 Codex 流错误，最短10分钟冷却，每日最多3次。
+                切换后验证节点回读与公共入口；真实 Codex 恢复仍需业务事件验证。
                 """
         }
         let group = snapshot.nativeFallbackGroup.isEmpty ? "未配置" : snapshot.nativeFallbackGroup
@@ -1128,19 +1150,46 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         } catch { showError("配置保存失败，自动切换状态未改变") }
     }
 
+    @objc private func toggleClashRecovery() {
+        let path = base.appendingPathComponent("config.json")
+        guard let bytes = try? Data(contentsOf:path),
+              var object = (try? JSONSerialization.jsonObject(with:bytes)) as? [String:Any]
+        else { showError("无法读取 Guardian 配置");return }
+        let newValue = !(object["clash_auto_failover_enabled"] as? Bool == true)
+        if newValue && (snapshot.clashGroup != "TunnelSentinel-OpenAI"
+                         || snapshot.clashGroupType != "Selector") {
+            showError("GPT 专用分组未就绪，拒绝启用自动切换")
+            return
+        }
+        object["clash_auto_failover_enabled"] = newValue
+        guard let data = try? JSONSerialization.data(withJSONObject:object,
+                                                       options:[.prettyPrinted,.sortedKeys])
+        else { showError("配置序列化失败");return }
+        do {
+            try data.write(to:path,options:.atomic)
+            let code = runLaunchctl(["kickstart","-k","gui/\(getuid())/\(guardianLabel)"]).0
+            if code != 0 { showError("配置已保存，但 Guardian 重启失败；请检查守护进程") }
+            lastRenderedState = ""
+            refreshStatus()
+        } catch { showError("Clash 自动切换设置保存失败") }
+    }
+
     @objc private func showClashRecoveryPlan() {
         let notice=NSAlert()
-        notice.messageText="Clash 自动恢复 · 模拟研究"
+        notice.messageText="Clash GPT 节点自动恢复"
         notice.informativeText="""
-            控制面：Clash Verge / Mihomo Unix Socket（只读）
-            AI 分组：\(snapshot.clashGroup)（\(snapshot.clashGroupType)） → \(snapshot.clashParent)
-            当前选中：\(snapshot.clashSelectedNode)
-            GPT 活跃连接：\(snapshot.clashActiveConnections)
-            可见候选：\(snapshot.clashCandidateCount)，有近期延迟记录：\(snapshot.clashEligibleCount)
-            模拟备选：\(snapshot.clashDryRunCandidate.isEmpty ? "暂无证据" : snapshot.clashDryRunCandidate)
+            代理客户端：Clash Verge / Mihomo Unix Socket
+            GPT 独立分组：\(snapshot.clashGroup)（\(snapshot.clashGroupType)）
+            当前 GPT 选中节点：\(snapshot.clashSelectedNode)
+            活跃 GPT 连接：\(snapshot.clashActiveConnections)
+            动态候选：\(snapshot.clashCandidateCount) 个
+            自动故障转移：\(snapshot.clashAutoSwitchMode == "live_guarded" ? "真实切换已启用" : "未启用")
+            最近控制结果：\(snapshot.clashFailoverState.isEmpty ? "暂无记录" : snapshot.clashFailoverState)
+            今日自动切换：\(snapshot.clashFailoverActions) 次（上限 3 次）
 
-            研究模式绝不发送 PUT、修改策略组、测试节点或重启代理。
-            延迟可达不等于 Codex 业务流式请求成功。
+            Codex 最近210秒≥3次流连接异常时，自动筛选并测试替代节点，
+            仅切换 TunnelSentinel-OpenAI 分组；10分钟冷却，失败回滚。
+            传输与公共入口验证通过不等于登录后 Codex 流恢复完成。
             """
         notice.addButton(withTitle:"知道了")
         notice.runModal()

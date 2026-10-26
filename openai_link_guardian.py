@@ -62,6 +62,7 @@ DEFAULTS = {
     "native_fallback_enabled": False,
     "native_fallback_group": "",
     "proxy_backend_auto_detect_enabled": False,
+    "clash_auto_failover_enabled": False,
     # Supplemental public, unauthenticated AI-domain trace checks; never own
     # node selection and never escalate rate limits/geo lookups to a failure.
     "ai_matrix_enabled": False,
@@ -1175,16 +1176,22 @@ class Guardian:
         clash_recent_errors = stream_info.get("recent_counts") or {}
         clash_error_score = sum(int(clash_recent_errors.get(k,0)) for k in
                                 ("broken_pipe","websocket_handshake","connection_reset"))
+        dedicated_ready = clash_active and clash.get("ai_group") == "TunnelSentinel-OpenAI" \
+            and clash.get("ai_group_type") == "Selector" and int(clash.get("candidate_count",0)) >= 2
+        live_clash_enabled = bool(dedicated_ready and self.config.get("clash_auto_failover_enabled",False))
         clash_plan = {
-            "mode":"offline_simulation_no_write",
+            "mode":"live_guarded" if live_clash_enabled else "offline_simulation_no_write",
             "would_trigger": bool(clash_active and clash_error_score >= 3),
             "eligible_candidates": int(clash.get("eligible_count",0)) if clash_active else 0,
-            "candidate_scope": "shared_AI_to_Proxies",
-            "blocked_reason":"dedicated_openai_group_required_before_switch",
-            "will_change_routes": False,
+            "candidate_scope": "dedicated_TunnelSentinel_OpenAI" if dedicated_ready else "shared_AI_to_Proxies",
+            "blocked_reason":"" if live_clash_enabled else
+                 "disabled_by_setting" if dedicated_ready else "dedicated_openai_group_required_before_switch",
+            "will_change_routes":bool(live_clash_enabled and clash_error_score >= 3),
+            "live_enabled":live_clash_enabled,
         } if clash_active else {}
         payload = {
             "clash_failover_plan": clash_plan,
+            "clash_failover_status": (lambda x: x if x else {})(self._load_clash_failover_status()) if clash_active else {},
             "proxy_client": "clash" if clash_active else "shadowrocket",
             "clash_observation": {k:clash.get(k) for k in
                 ("source","observed_at","active","api_healthy","mode","tun_enabled",
@@ -1192,7 +1199,7 @@ class Guardian:
                  "selected_node","active_request_node","active_request_chain",
                  "active_gpt_connections","candidate_count","eligible_count",
                  "dry_run_candidate","switch_simulation","reason") if k in clash},
-            "clash_auto_switch_mode": "simulation_only" if clash_active else "not_applicable",
+            "clash_auto_switch_mode": "live_guarded" if live_clash_enabled else "simulation_only" if clash_active else "not_applicable",
             "codex_stream_diagnostics": stream_info,
             "codex_stream_sqlite_monitor_enabled": bool(self.config.get("codex_stream_sqlite_monitor_enabled",False)),
             "native_proxy_log_reader_enabled": bool(self.config.get("native_proxy_log_reader_enabled",False)),
@@ -1294,6 +1301,33 @@ class Guardian:
                 self._probe_summary(results),
             )
         return healthy, results
+
+    def _load_clash_failover_status(self) -> dict:
+        try:
+            report = json.loads((DEFAULT_HOME / "clash_failover_status.json").read_text())
+            return report if isinstance(report,dict) and 0<=time.time()-int(report.get("checked_at",0))<=1800 else {}
+        except (OSError,ValueError,TypeError):
+            return {}
+
+    def maybe_clash_failover(self) -> None:
+        """One bounded real switch attempt. Only a dedicated GPT group is writable."""
+        if self.active_backend != "clash" or not self.config.get("clash_auto_failover_enabled",False):
+            return
+        helper=DEFAULT_HOME / "clash_failover.py"
+        if not helper.is_file():
+            self.logger.warning("clash failover helper is missing; leaving routing unchanged")
+            return
+        try:
+            r=subprocess.run([sys.executable,str(helper)],capture_output=True,text=True,
+                             timeout=35,check=False)
+            if r.stdout:
+                outcome=json.loads(r.stdout)
+                state=str(outcome.get("state","unknown"))
+                if state not in ("armed","cooldown_or_daily_limit"):
+                    self.logger.info("clash_failover state=%s changed=%s",state,
+                                     bool(outcome.get("changed")))
+        except (OSError,ValueError,subprocess.SubprocessError):
+            self.logger.warning("clash failover helper failed safely; no retry storm")
 
     def refresh_active_backend(self) -> None:
         """Follow the existing system-proxy owner, never manage either proxy.
@@ -1476,6 +1510,8 @@ class Guardian:
             len(self.failure_times),
             self._probe_summary(results),
         )
+        if self.active_backend == "clash":
+            self.maybe_clash_failover()
         if switch_required:
             recovered = self.attempt_failover()
             self.write_status(

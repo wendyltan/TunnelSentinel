@@ -16,7 +16,7 @@ import subprocess
 import time
 
 CLASH_ROOT = Path.home() / 'Library/Application Support/io.github.clash-verge-rev.clash-verge-rev'
-GPT_HOSTS = ('openai.com', 'chatgpt.com', 'oaistatsig.com', 'openaimerge.com')
+GPT_HOSTS = ('openai.com', 'chatgpt.com', 'oaistatic.com', 'oaiusercontent.com', 'oaistatsig.com', 'openaimerge.com')
 
 class UnixHTTP(http.client.HTTPConnection):
     def __init__(self, path: str):
@@ -84,18 +84,20 @@ def evaluate_candidate(name: str, item: dict, now: str) -> dict:
 def summarize(config: dict, proxies: dict, connections: dict) -> dict:
     allproxies=proxies.get('proxies') or {}
     if not isinstance(allproxies,dict):allproxies={}
-    group=allproxies.get('AI') or {}
+    dedicated = 'TunnelSentinel-OpenAI' in allproxies
+    observed_group = 'TunnelSentinel-OpenAI' if dedicated else 'AI'
+    group=allproxies.get(observed_group) or {}
     ai_chain=[];current='';observed_nodes=set();sample_count=0;selected='';group_name=''
     if group.get('type') in ('Selector','Fallback','URLTest','LoadBalance'):
         selected=group.get('now') or ''
-        group_name='AI'
+        group_name=observed_group
     for entry in (connections.get('connections') or [])[:800]:
         if not isinstance(entry,dict):continue
         md=entry.get('metadata') or {}
         if not is_gpt_host(str(md.get('host') or '')):continue
         chain=entry.get('chains') or []
         if not isinstance(chain,list) or not chain:continue
-        if 'AI' not in chain: continue
+        if observed_group not in chain: continue
         sample_count+=1
         if not ai_chain: ai_chain=[str(v)[:100] for v in chain[:8]]
         observed_nodes.add(str(chain[0])[:95])
@@ -104,16 +106,21 @@ def summarize(config: dict, proxies: dict, connections: dict) -> dict:
     if len(observed_nodes)>1:ai_chain=[]
     parent=selected if isinstance(selected,str) else ''
     downstream=allproxies.get(parent) or {}
-    candidates=downstream.get('all') if isinstance(downstream.get('all'),list) else []
-    if not candidates:
+    if dedicated:
+        # Unlike legacy AI→Proxies, the dedicated policy selects direct nodes;
+        # never point mutation at the shared Proxies group.
+        downstream=group
         candidates=group.get('all') if isinstance(group.get('all'),list) else []
+    else:
+        candidates=downstream.get('all') if isinstance(downstream.get('all'),list) else []
+        if not candidates: candidates=group.get('all') if isinstance(group.get('all'),list) else []
     candidate_list=[]
     for name in candidates[:250]:
         if isinstance(name,str) and name in allproxies:
-            candidate_list.append(evaluate_candidate(name,allproxies[name],downstream.get('now','')))
+            candidate_list.append(evaluate_candidate(name,allproxies[name],group.get('now','') if dedicated else downstream.get('now','')))
     eligible=[x for x in candidate_list if x['eligible']]
     mode=str(config.get('mode','unknown')).lower()
-    return {'source':'mihomo_unix_readonly','observed_at':int(time.time()),'mode':mode,'tun_enabled':bool((config.get('tun') or {}).get('enable')) if isinstance(config.get('tun'),dict) else False,'ai_group':group_name,'ai_group_type':str(group.get('type',''))[:24],'ai_selection':str(selected)[:95], 'child_group_type':str(downstream.get('type',''))[:24],'selected_node':str(downstream.get('now',''))[:95], 'active_request_node':current if sample_count else '', 'active_request_chain':ai_chain, 'active_gpt_connections':sample_count, 'candidate_count':len(candidate_list),'eligible_count':len(eligible),'dry_run_candidate':min(eligible,key=lambda x:x['delay_ms'])['name'] if eligible else '', 'switch_simulation':'shared_ai_policy_requires_dedicated_openai_group' if eligible else 'insufficient_evidence_no_write','switch_write_enabled':False,'scope':'shared_ai_policy','active_proxy_count':len(allproxies)}
+    return {'source':'mihomo_unix_readonly','observed_at':int(time.time()),'mode':mode,'tun_enabled':bool((config.get('tun') or {}).get('enable')) if isinstance(config.get('tun'),dict) else False,'ai_group':group_name,'ai_group_type':str(group.get('type',''))[:24],'ai_selection':str(selected)[:95], 'child_group_type':str(downstream.get('type',''))[:24],'selected_node':str(group.get('now','') if dedicated else downstream.get('now',''))[:95], 'active_request_node':current if sample_count else '', 'active_request_chain':ai_chain, 'active_gpt_connections':sample_count, 'candidate_count':len(candidate_list),'eligible_count':len(eligible),'dry_run_candidate':min(eligible,key=lambda x:x['delay_ms'])['name'] if eligible else '', 'switch_simulation':('dedicated_policy_ready_for_guarded_failover' if eligible else 'insufficient_evidence_no_write') if dedicated else ('shared_ai_policy_requires_dedicated_openai_group' if eligible else 'insufficient_evidence_no_write'),'switch_write_enabled':False,'scope':'dedicated_openai_policy' if dedicated else 'shared_ai_policy','active_proxy_count':len(allproxies)}
 
 def inspect() -> dict:
     addr,port=system_proxy()

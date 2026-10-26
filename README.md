@@ -264,3 +264,18 @@ swiftc -parse-as-library -O -framework AppKit \
 **已完成离线分组结构实验：** `research/clash-openai-offline-lab.yaml` 使用两条虚构的回环代理节点建立 `OpenAI-Recovery-Lab` fallback 专用组，当前 Clash Verge 内置 Mihomo `-t` 配置校验通过；没有启用，不包含订阅 URL 或真实节点凭据。将来实装前仍需验证完整域名覆盖、候选健康、规则互不影响、可回退切换及业务流式恢复。
 
 **权限边界：** 在自动代理识别模式下，Guardian 启动时不读取 Shadowrocket 受保护的 App Group 偏好。Clash 使用现有用户权限内的 Unix Socket 和系统代理状态，原则上无需为 Python 授予额外“访问其他 App 数据”权限。如出现此前残留的 macOS 授权弹窗，可以拒绝；不影响 Clash 的只读监控。此前的请求不代表本版本需要该权限。
+
+### 2026-10-26 · Clash 真正自动故障转移（已在 Mac 实机启用）
+
+**架构未改变：** Clash Verge/Mihomo 仍是唯一代理引擎；TunnelSentinel 只是监控及条件式调用其**官方本地 Unix Socket API**，不嵌入、不启动第二个代理内核。
+
+- 为当前 Clash Verge 订阅的增强文件建立 `TunnelSentinel-OpenAI` **独立 Selector**，通过前置域名规则把 `chatgpt.com`、`openai.com`、`oaistatic.com`、`oaiusercontent.com`、`oaistatsig.com` 和 `openaimerge.com` 导向它；`include-all` 动态发现当前订阅节点，排除流量/续订等元数据。原 `AI` 和共享 `Proxies` 不变，其他业务不被这个组的节点切换牵连。增强文件保存在用户 Clash Verge Profile 增强目录，未写入项目源码或泄露真实代理凭据。
+- Clash Verge 生成的运行配置最初是磁盘 `mode: direct`、核心运行 `rule`，为避免切断规则流量，已将受保护的运行配置副本模式校正为 `rule`，离线 `mihomo -t` 通过，再经 `/configs?force=true` 一次重载，随后将校验通过的配置对齐至生成文件；原配置已备份。
+- 真实节点切换控制器 `scripts/clash_failover.py` 只允许 `PUT /proxies/TunnelSentinel-OpenAI`，首先确认系统代理确由 Clash 接管、Rule 模式、TUN 关闭、专用分组的六条高优先级规则正确、候选归属有效。日常每轮读取 Codex **最近 210 秒 >=3 个流中断**且诊断新鲜时开始候选探测；挑选延迟测试可达的真实节点后 PUT、GET 回读组内选中、通过同一系统代理检查 ChatGPT 公共入口 HTTP 200。失败则尝试恢复原节点；绝不写共享 `Proxies` / `AI`。采取每次至少 10 分钟间隔、每日最多 3 次、故障节点 30 分钟隔离且最多 2 个、进程间文件锁及原子状态持久化；动态端口由当前系统代理/Mihomo 双向核验，不再写死 7897。所有结果写入 `clash_route_state.json`、`clash_failover_status.json`。
+- **实机真实验收**：独立 GPT 组 139 个动态候选、GPT HTTPS 请求已观察到 `节点 → TunnelSentinel-OpenAI`。执行真实 canary `USA Los Angeles 05 → Japan 02 → USA Los Angeles 05`，两次都核对了 Mihomo 原生选中状态、ChatGPT 公共入口 200，且 `AI → Proxies` 不变。自动控制器当前处于 `armed`（已真实启用但未发生自然故障），不冒充完整 Codex 业务恢复。
+- 当前生产配置仅额外开启 `clash_auto_failover_enabled=true`；默认安装保留 `false`，以免其他电脑自动控制未知代理。菜单提供“开启／关闭 Clash 自动切换”，修改后只重启 Guardian 监测进程，不重启 Clash。旧 Shadowrocket 规则和配置未删，系统代理切回时仍有兼容路径。
+- **能力界限**：独立组读回+公共 HTTP 200 是路由层验证，不代表登录后的 Codex WebSocket 持续稳定；首次真实自然错误事件后的恢复要从真实客户端日志补证。若订阅变动导致前置规则或组消失、设置不一致、候选不可用、公共探测异常，控制器按 fail-closed 不切换，必要时在 Clash Verge 界面重新应用该订阅的规则和代理组增强。
+
+相关源码：`scripts/clash_openai_profile.py`（无凭据专用组和规则构造）、`scripts/clash_failover.py`（真实有界切换控制）、`scripts/clash_observer.py`（只读动态发现）。
+
+**2026-10-26 最终验收补充：** 除 Codex 流断线达到阈值之外，若现有代理端口仍可达，但 ChatGPT 公共入口连续网络传输失败（多个探测返回 HTTP 0、窗口内失败评分≥3），同样可启动替代候选检测与切换；Cloudflare 403 挑战／429 限流不会以此触发。端口从运行中的系统代理和 Mihomo 双重校验取得。最新完整回归 113/113 通过，AppKit Swift 类型检查通过。已在 Mac 上真实 `canary` 切换并恢复原节点；自然 Codex 故障下首次自动切换后的业务验收待事件发生时确认。

@@ -112,3 +112,18 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [ ] 在下一次**自然发生的 Codex Broken pipe** 事件中验收实际故障恢复和登录后流式业务成功证据；当前只证明路由层与公共出口
 - [ ] 不同订阅自动更新／订阅更换时确认 Clash Verge 增强配置重建过程，验证对缺失成员 fail-closed 的提示
 - [ ] 睡眠/唤醒和锁屏下自动切换端到端验证；持续记录节点变更和真实业务成功率
+
+## 2026-10-26 P0/P1 稳定性修复验收（此处为当前基线；上文旧版本 TODO 保留作历史）
+- [x] 统一 `automatic_control_enabled` 总闸门，生产设为 `false`；两套节点切换旧标志均关闭
+- [x] `tunnel_recovery_enabled` 独立开关，生产设为 `false`，断开网络不自动重新启用 Shadowrocket
+- [x] 明确只读模式状态 `proxy_control_mode=read_only`，健康恢复不再冒充节点切换成功
+- [x] Shadowrocket 旧分组仅标为“历史配置 / 当前未核实”，不用配置名冒充实际规则命中
+- [x] 纯日志分类：`ResizeObserver` 布局警告不再计入业务异常；新增浏览器后端请求失败分类
+- [x] 公开入口 / WebSocket 握手 / API TLS / 登录 TLS / 桌面 TLS 分层探测，固定域名、无账号凭证、每 300 秒运行，不触发自动切换
+- [x] Codex 只读 SQLite 流断线保持独立观察；菜单提供分层诊断与两个开关
+- [x] 历史独立 Route Controller 安装器和旧 Swift 分组编辑器移入 `legacy/`；不影响当前单 App
+- [x] 回归单测、Swift 类型检查、签名和当前 Shadowrocket 网络实机检查
+- [ ] P1 · 手动端到端 Computer Use 验收：普通非 ChatGPT 网站的浏览器执行、失败时间点与应用日志关联；本地只读代码无法替代真实点击测试
+- [ ] P1 · 下次订阅实际更换时验证组绑定、规则匹配和 Shadowrocket UI 状态；当前无法通过公开 API 保证自动重绑定
+- [ ] P1 · 无需前台界面的 Shadowrocket 组读取和锁屏切换仍不可用，禁止标为已交付
+- [ ] P1 · 出现真正的 Codex websocket 业务故障时交叉核对 SQL 日志、TLS/WSS 探测与浏览器后端日志；公开 200 不等于业务可用

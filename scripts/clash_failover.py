@@ -161,6 +161,8 @@ def perform_switch(proxies,grp,original,target,do_restore=False):
 
 def do_once(canary=False)->dict:
     conf=load(ROOT/'config.json')
+    if not conf.get('automatic_control_enabled',False):
+        return {'state':'monitor_only','changed':False}
     if not canary and not conf.get('clash_auto_failover_enabled',False):
         return {'state':'disabled','changed':False}
     observed=load(ROOT/'status.json')

@@ -34,7 +34,7 @@ class RealClashTests(unittest.TestCase):
  def test_real_trigger_requires_recent_three_codex_errors(self):
   with tempfile.TemporaryDirectory() as path:
    base=Path(path)
-   (base/'config.json').write_text(json.dumps({'clash_auto_failover_enabled':True,'codex_stream_sqlite_monitor_enabled':True}))
+   (base/'config.json').write_text(json.dumps({'automatic_control_enabled':True,'clash_auto_failover_enabled':True,'codex_stream_sqlite_monitor_enabled':True}))
    def status(errors=0):
     (base/'status.json').write_text(json.dumps({'proxy_client':'clash','route_management':'clash_observe_only','healthy':True,
      'codex_stream_diagnostics':{'state':'ok','scan_at':int(time.time()),'last_at':int(time.time()) if errors else 0,'recent_counts':{'broken_pipe':errors}}}))
@@ -55,7 +55,7 @@ class RealClashTests(unittest.TestCase):
  def test_challenge_403_cannot_trigger_transport_failover(self):
   with tempfile.TemporaryDirectory() as tmp:
    base=Path(tmp)
-   (base/'config.json').write_text(json.dumps({'clash_auto_failover_enabled':True,'codex_stream_sqlite_monitor_enabled':True}))
+   (base/'config.json').write_text(json.dumps({'automatic_control_enabled':True,'clash_auto_failover_enabled':True,'codex_stream_sqlite_monitor_enabled':True}))
    (base/'status.json').write_text(json.dumps({'proxy_client':'clash','route_management':'clash_observe_only',
      'healthy':False,'proxy_available':True,'recent_failure_score':4,
      'probes':[{'name':'edge','http_code':403}],
@@ -65,6 +65,7 @@ class RealClashTests(unittest.TestCase):
 
  def test_guardian_disabled_by_default_for_other_macs(self):
   self.assertFalse(g.DEFAULTS.get('clash_auto_failover_enabled'))
+  self.assertFalse(g.DEFAULTS.get('automatic_control_enabled'))
   self.assertFalse(g.DEFAULTS.get('proxy_backend_auto_detect_enabled'))
 
 if __name__=='__main__':unittest.main()

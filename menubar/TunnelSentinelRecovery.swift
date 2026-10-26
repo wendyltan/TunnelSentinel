@@ -57,7 +57,8 @@ final class IntegratedRecovery {
         value as? String ?? fallback
     }
     private func enabled(_ config:[String:Any])->Bool {
-        return config["codex_auto_failover_enabled"] as? Bool == true
+        return config["automatic_control_enabled"] as? Bool == true
+            && config["codex_auto_failover_enabled"] as? Bool == true
             && config["native_fallback_enabled"] as? Bool == true
             && config["native_fallback_group"] as? String == "OpenAI-Resilience"
             && config["codex_stream_sqlite_monitor_enabled"] as? Bool == true
@@ -88,7 +89,7 @@ final class IntegratedRecovery {
         let operating=enabled(cfg)
         // While disabled, no macOS Accessibility permission is necessary.
         if !operating {
-            reported("ready_disabled",reason:"单应用集成已完成，可从 TunnelSentinel 菜单开启",armed:false)
+            reported("ready_disabled",reason:"只读监控中；节点自动控制未启用",armed:false)
             return
         }
         guard AXIsProcessTrusted() else {

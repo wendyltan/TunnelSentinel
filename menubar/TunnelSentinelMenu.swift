@@ -30,6 +30,10 @@ private struct Snapshot {
     var routeManagement = "legacy_external_select"
     var nativeFallbackGroup = ""
     var proxyClient = "shadowrocket"
+    var automaticControlEnabled = false
+    var tunnelRecoveryEnabled = false
+    var deepConnection: [String: Any] = [:]
+    var codexStream: [String: Any] = [:]
     var clashMode = ""
     var clashGroup = ""
     var clashGroupType = ""
@@ -217,6 +221,10 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         next.routeManagement = values["route_management"] as? String ?? "legacy_external_select"
         next.nativeFallbackGroup = values["native_fallback_group"] as? String ?? ""
         next.proxyClient = values["proxy_client"] as? String ?? "shadowrocket"
+        next.automaticControlEnabled = values["automatic_control_enabled"] as? Bool ?? false
+        next.tunnelRecoveryEnabled = values["tunnel_recovery_enabled"] as? Bool ?? false
+        next.deepConnection = values["deep_connection_diagnostics"] as? [String:Any] ?? [:]
+        next.codexStream = values["codex_stream_diagnostics"] as? [String:Any] ?? [:]
         next.clashAutoSwitchMode = values["clash_auto_switch_mode"] as? String ?? "simulation_only"
         if let failover = values["clash_failover_status"] as? [String:Any] {
             next.clashFailoverState = failover["state"] as? String ?? ""
@@ -334,7 +342,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         // separately labelled *global* selection in status.json. Avoid a
         // redundant cross-App protected-preferences read from this menu app:
         // macOS may show a broad "access data from other apps" TCC prompt.
-        if snapshot.routeManagement == "native_fallback" || snapshot.routeManagement == "clash_observe_only" { return }
+        if snapshot.routeManagement == "shadowrocket_policy_unverified" || snapshot.routeManagement == "clash_observe_only" { return }
         guard !nodeLookupBusy && !nodeLookupSuspended else { return }
         if let last = lastNodeReadFailedAt, Date().timeIntervalSince(last) < 20 { return }
         nodeLookupBusy = true
@@ -501,8 +509,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         if snapshot.routeManagement == "clash_observe_only" {
             return "Clash \(snapshot.clashMode.uppercased()) · AI → \(snapshot.clashParent) · 仅监测"
         }
-        if snapshot.routeManagement == "native_fallback" {
-            return "公共入口可达 · OpenAI 由 Shadowrocket fallback 自动选路"
+        if snapshot.routeManagement == "shadowrocket_policy_unverified" {
+            return "公共入口可达 · Shadowrocket GPT 分组实际命中未核实"
         }
         return "公共入口可达 · 业务错误仅通过客户端日志观察"
     }
@@ -736,6 +744,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         let fingerprint = [
             headline, detail, liveNode ?? "", snapshot.checkedNode, snapshot.checkedAt,
             snapshot.proxyClient,snapshot.clashMode,snapshot.clashGroup,snapshot.clashParent,
+            String(snapshot.automaticControlEnabled),String(snapshot.tunnelRecoveryEnabled),
+            String(describing:snapshot.deepConnection),String(describing:snapshot.codexStream),
             snapshot.clashAutoSwitchMode,snapshot.clashFailoverState,
             snapshot.clashFailoverFrom,snapshot.clashFailoverTo,String(snapshot.clashFailoverActions),
             snapshot.clashSelectedNode,String(snapshot.clashActiveConnections),
@@ -795,6 +805,16 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem(aiMatrixSummary, symbol: "globe.americas",
                               action: #selector(showAIMatrix)))
         menu.addItem(menuItem("查看 GPT 节点状态与事件", symbol: "list.bullet.rectangle", action: #selector(openLog)))
+        menu.addItem(menuItem("ChatGPT / Codex 分层诊断", symbol: "stethoscope",
+                              action: #selector(showDeepConnection)))
+        menu.addItem(menuItem(snapshot.automaticControlEnabled
+                              ? "自动节点控制 · 已开启（点击关闭）"
+                              : "只读监控 · 自动节点控制已关闭", symbol: "lock.shield",
+                              action: #selector(toggleAutomaticControl)))
+        menu.addItem(menuItem(snapshot.tunnelRecoveryEnabled
+                              ? "隧道掉线重连 · 已开启（点击关闭）"
+                              : "隧道掉线重连 · 已关闭（点击开启）", symbol: "arrow.clockwise.circle",
+                              action: #selector(toggleTunnelRecovery)))
         let recovery = IntegratedRecovery.shared.summary
         if snapshot.routeManagement == "clash_observe_only" {
             menu.addItem(menuItem(snapshot.clashAutoSwitchMode == "live_guarded"
@@ -806,12 +826,10 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                                   : "开启 Clash 自动切换", symbol: "arrow.triangle.2.circlepath",
                                   action: #selector(toggleClashRecovery)))
         } else {
-            menu.addItem(menuItem("节点故障转移 · \(recovery)", symbol: "arrow.triangle.2.circlepath",
-                                  action: #selector(openRecoverySettings)))
-            let autoSwitchOn = recoveryEnabled()
-            menu.addItem(menuItem(autoSwitchOn ? "关闭 Codex 自动故障转移" : "开启 Codex 自动故障转移",
-                                  symbol: autoSwitchOn ? "pause.circle" : "play.circle",
-                                  action: #selector(toggleRecovery)))
+            menu.addItem(menuItem(snapshot.routeManagement == "shadowrocket_policy_unverified"
+                                  ? "Shadowrocket 节点切换 · 分组未核实（不可用）"
+                                  : "节点故障转移 · \(recovery)",
+                                  symbol: "lock", action: #selector(showShadowrocketLimits)))
         }
         if (recoveryBlocked || !snapshot.networkHealthy) && snapshot.routeManagement != "clash_observe_only" {
             menu.addItem(menuItem("打开 Shadowrocket 手动处理", symbol: "network",
@@ -971,7 +989,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return """
             GPT 节点状态与事件
             ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            策略分组：\(group)  ·  原生 fallback
+            历史配置分组：\(group)（未核实当前 GPT 规则命中）
+            自动节点控制：\(snapshot.automaticControlEnabled ? "允许" : "关闭 · 只读")
+            隧道自动重连：\(snapshot.tunnelRecoveryEnabled ? "开启" : "关闭")
             最近一次 GPT 请求：\(backend)
             上次原生日志节点：\(lastNative)
             上次人工确认：\(lastVerified)
@@ -1120,12 +1140,101 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return json["codex_auto_failover_enabled"] as? Bool == true
     }
 
+    private func updateMonitorConfig(_ change: (inout [String:Any]) -> Void) {
+        let path = base.appendingPathComponent("config.json")
+        guard let source = try? Data(contentsOf:path),
+              var settings = (try? JSONSerialization.jsonObject(with:source)) as? [String:Any]
+        else { showError("无法读取守护配置"); return }
+        change(&settings)
+        guard let payload = try? JSONSerialization.data(withJSONObject:settings,
+                                                          options:[.prettyPrinted,.sortedKeys])
+        else { showError("配置校验失败");return }
+        do {
+            try payload.write(to:path,options:.atomic)
+            let result=runLaunchctl(["kickstart","-k","gui/\(getuid())/\(guardianLabel)"])
+            if result.0 != 0 { showError("已写入配置，但 Guardian 重启失败，请检查运行状态") }
+            IntegratedRecovery.shared.tick()
+            lastRenderedState=""
+            refreshStatus()
+        } catch { showError("保存监控开关失败") }
+    }
+
+    @objc private func toggleAutomaticControl() {
+        let enabled = !snapshot.automaticControlEnabled
+        if enabled {
+            let notice = NSAlert()
+            notice.messageText = "开启自动节点控制总开关？"
+            notice.informativeText = "目前采用只读监测。此开关仅允许已单独启用且通过验证的后端控制器运行；不会自动更改订阅或打开旧后端开关。"
+            notice.addButton(withTitle:"允许")
+            notice.addButton(withTitle:"取消")
+            guard notice.runModal() == .alertFirstButtonReturn else {return}
+        }
+        updateMonitorConfig { config in
+            config["automatic_control_enabled"]=enabled
+            if !enabled {
+                config["codex_auto_failover_enabled"]=false
+                config["clash_auto_failover_enabled"]=false
+                config["codex_auto_preflight_enabled"]=false
+            }
+        }
+    }
+
+    @objc private func toggleTunnelRecovery() {
+        let enabled = !snapshot.tunnelRecoveryEnabled
+        updateMonitorConfig { settings in settings["tunnel_recovery_enabled"]=enabled }
+    }
+
+    @objc private func showDeepConnection() {
+        let diag=snapshot.deepConnection
+        let state=diag["state"] as? String ?? "pending_or_stale"
+        let targets=diag["targets"] as? [[String:Any]] ?? []
+        let names=["chatgpt_edge":"ChatGPT 公共入口", "chatgpt_websocket":"ChatGPT WebSocket 传输",
+                   "openai_api_tls":"OpenAI API TLS", "openai_auth_tls":"OpenAI 登录 TLS",
+                   "chatgpt_desktop_tls":"桌面端关联域名 TLS"]
+        let rows=targets.map { item -> String in
+            let key=item["name"] as? String ?? "?"
+            let code=item["http_code"] as? Int ?? 0
+            let state=item["state"] as? String ?? "unverified"
+            let ms=item["latency_ms"] as? Int
+            return "\(names[key] ?? key)：\(state)，HTTP \(code)\(ms.map { " · \($0)ms" } ?? "")"
+        }.joined(separator:"\n")
+        let stream=snapshot.codexStream
+        let count=stream["recent_counts"] as? [String:Int] ?? [:]
+        let failures=["broken_pipe","websocket_handshake","connection_reset"]
+            .map { "\($0)=\(count[$0] ?? 0)" }.joined(separator:"，")
+        let backend = snapshot.issues.filter { $0.title.contains("浏览器控制") }
+            .map { "\($0.count) 条浏览器后端异常" }.joined(separator:"，")
+        let dlg=NSAlert()
+        dlg.messageText="ChatGPT / Codex 分层诊断（只读）"
+        dlg.informativeText="""
+            当前代理：\(snapshot.proxyClient)
+            自动节点控制：\(snapshot.automaticControlEnabled ? "已开启" : "已关闭")
+            深度探测：\(state)
+
+            \(rows.isEmpty ? "无新鲜结果（下一个检测周期自动补齐）" : rows)
+
+            Codex 日志：\(stream["state"] as? String ?? "无记录")
+            近 210 秒响应流错误：\(failures)
+            浏览器控制后端：\(backend.isEmpty ? "近 3 分钟无已分类报错" : backend)
+
+            HTTP 403/404/421 可能代表鉴权或路径拒绝，TLS 成功不等于登录有效。
+            此处不模拟登录、对话、网页点击，也不记录账号数据。
+            即使桌面域名 TLS 测试失败，也不能单独判定 Computer Use 故障。
+            """
+        dlg.addButton(withTitle:"关闭")
+        dlg.runModal()
+    }
+
     @objc private func toggleRecovery() {
         let path = base.appendingPathComponent("config.json")
         guard let data = try? Data(contentsOf: path),
               var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
         let newValue = !(json["codex_auto_failover_enabled"] as? Bool == true)
+        if newValue && !snapshot.automaticControlEnabled {
+            showError("自动控制总开关已关闭。先开启总开关，再选择特定后端；当前保持只读。")
+            return
+        }
         if newValue && !AXIsProcessTrusted() {
             _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt":true] as CFDictionary)
             let notice = NSAlert()
@@ -1156,6 +1265,10 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
               var object = (try? JSONSerialization.jsonObject(with:bytes)) as? [String:Any]
         else { showError("无法读取 Guardian 配置");return }
         let newValue = !(object["clash_auto_failover_enabled"] as? Bool == true)
+        if newValue && !snapshot.automaticControlEnabled {
+            showError("自动控制总开关已关闭。先开启总开关，再选择特定后端。")
+            return
+        }
         if newValue && (snapshot.clashGroup != "TunnelSentinel-OpenAI"
                          || snapshot.clashGroupType != "Selector") {
             showError("GPT 专用分组未就绪，拒绝启用自动切换")
@@ -1193,6 +1306,22 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             """
         notice.addButton(withTitle:"知道了")
         notice.runModal()
+    }
+
+    @objc private func showShadowrocketLimits() {
+        let dlg=NSAlert()
+        dlg.messageText="Shadowrocket 自动节点控制未开放"
+        dlg.informativeText="""
+            当前只确认系统代理由 Shadowrocket 提供，没有可靠证据证明
+            ChatGPT 规则使用历史 OpenAI-Resilience 分组。
+            原分组控制依赖固定节点名称和可访问的图形编辑页；
+            Mac 锁屏、换机场订阅、分组界面关闭时未通过稳定性验收。
+
+            为避免误修改代理规则，这个版本保持只读，无法从菜单直接启用
+            Shadowrocket 分组级自动切换。可继续使用基础健康检测及诊断日志。
+            """
+        dlg.addButton(withTitle:"知道了")
+        dlg.runModal()
     }
 
     @objc private func openRecoverySettings() {

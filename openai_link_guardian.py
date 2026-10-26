@@ -63,6 +63,11 @@ DEFAULTS = {
     "native_fallback_group": "",
     "proxy_backend_auto_detect_enabled": False,
     "clash_auto_failover_enabled": False,
+    # A single explicit safety gate for ALL node-changing controllers.
+    # Defaults read-only; the tunnel reconnect feature has its own switch.
+    "automatic_control_enabled": False,
+    "deep_connection_probe_enabled": True,
+    "deep_connection_probe_interval_seconds": 300,
     # Supplemental public, unauthenticated AI-domain trace checks; never own
     # node selection and never escalate rate limits/geo lookups to a failure.
     "ai_matrix_enabled": False,
@@ -76,7 +81,7 @@ DEFAULTS = {
     "native_proxy_log_reader_enabled": False,
     "native_proxy_log_reader_interval_seconds": 40,
     "native_proxy_node_recent_seconds": 600,
-    "tunnel_recovery_enabled": True,
+    "tunnel_recovery_enabled": False,
     "tunnel_event_lookback_seconds": 300,
     "tunnel_reconnect_cooldown_seconds": 60,
     "tunnel_reconnect_settle_seconds": 3,
@@ -132,6 +137,7 @@ ISSUE_LABELS = {
     "connection": "ChatGPT 连接中断",
     "pubsub": "消息推送持续断开",
     "layout": "客户端布局异常",
+    "browser_backend": "浏览器控制后台连接异常（需人工核实）",
 }
 
 
@@ -479,6 +485,8 @@ class LogWatcher:
             return "thread_sync"
         if "ERR_CONNECTION_CLOSED" in line or "ERR_PROXY_CONNECTION_FAILED" in line:
             return "connection"
+        if "IAB_LIFECYCLE" in line and "iab backend info request failed" in line:
+            return "browser_backend"
         if "ResizeObserver loop completed with undelivered notifications" in line:
             return "layout"
         return None
@@ -500,7 +508,7 @@ class LogWatcher:
                     "last_seen": max(events),
                 }
                 for kind, events in groups.items()
-                if kind != "layout" or len(events) >= 3
+                if kind != "layout"  # Layout warnings are not network or browser-control failures.
             ),
             key=lambda item: item["last_seen"],
             reverse=True,
@@ -642,6 +650,10 @@ class Guardian:
         self.codex_stream_last_run = 0.0
         self.codex_stream_running = False
         self.codex_stream_result: dict = {}
+        self.deep_probe_lock = threading.Lock()
+        self.deep_probe_running = False
+        self.deep_probe_last_run = 0.0
+        self.deep_probe_result: dict = {}
         self.native_log_lock = threading.Lock()
         self.native_log_last_run_at = 0.0
         self.native_log_running = False
@@ -719,6 +731,34 @@ class Guardian:
             self.codex_stream_last_run=now
         threading.Thread(target=self._codex_stream_worker,daemon=True,
                          name="CodexStreamHealthObserver").start()
+
+    def _deep_probe_worker(self) -> None:
+        helper=DEFAULT_HOME / "gpt_deep_probe.py"
+        outcome={"source":"bounded_public_tls_probes","state":"unavailable"}
+        try:
+            proc=subprocess.run([sys.executable,str(helper),str(self.config["proxy"])],
+                                capture_output=True,text=True,check=False,timeout=28)
+            if proc.returncode==0:
+                parsed=json.loads(proc.stdout)
+                if parsed.get("source")=="bounded_public_tls_probes":outcome=parsed
+        except (OSError,ValueError,TypeError,subprocess.SubprocessError):
+            pass
+        finally:
+            with self.deep_probe_lock:
+                self.deep_probe_result=outcome
+                self.deep_probe_running=False
+
+    def maybe_begin_deep_probe(self, network_healthy: bool) -> None:
+        if not self.config.get("deep_connection_probe_enabled",True) or not network_healthy:
+            return
+        now=time.monotonic()
+        with self.deep_probe_lock:
+            if self.deep_probe_running or now-self.deep_probe_last_run<max(180,int(self.config.get("deep_connection_probe_interval_seconds",300))):
+                return
+            self.deep_probe_running=True
+            self.deep_probe_last_run=now
+        threading.Thread(target=self._deep_probe_worker,daemon=True,
+                         name="GPTAndCodexLayeredReadOnlyProbe").start()
 
     def _native_proxy_log_worker(self) -> None:
         # The guard process NEVER opens the protected Shadowrocket directory.
@@ -1027,6 +1067,8 @@ class Guardian:
             self.failure_times.popleft()
 
     def should_switch(self) -> bool:
+        if not self.config.get("automatic_control_enabled",False):
+            return False
         # A native Shadowrocket fallback policy controls actual egress nodes.
         # Never race it with the legacy shadowrocket://select control channel.
         if self.config.get("native_fallback_enabled", False):
@@ -1050,6 +1092,10 @@ class Guardian:
         return len(self.failure_times) >= int(self.config["failures_before_switch"])
 
     def attempt_failover(self) -> bool:
+        if not self.config.get("automatic_control_enabled",False):
+            self.recovery_state="monitoring"
+            self.recovery_reason="只读监控：禁止自动修改节点"
+            return False
         original = self.current_node
         nodes = [n for n in self.known_good_candidates() if n != original]
         self.last_switch_at = time.monotonic()
@@ -1153,6 +1199,14 @@ class Guardian:
             ai_when = (datetime.fromtimestamp(self.ai_matrix_checked_at)
                        .astimezone().isoformat(timespec="seconds")
                        if ai_valid else "")
+        with self.deep_probe_lock:
+            deep=dict(self.deep_probe_result)
+            deep_running=self.deep_probe_running
+        deep_when=int(deep.get("checked_at",0))
+        if deep_when<=0 or not (0<=time.time()-deep_when<=max(600,2*int(self.config.get("deep_connection_probe_interval_seconds",300)))):
+            deep={"source":"bounded_public_tls_probes","state":"pending_or_stale",
+                  "targets":[],"limitations":"no_authenticated_computer_use_test"}
+        deep["running"]=deep_running
         with self.native_log_lock:
             native = self.native_log_latest.copy()
             native_events = [e.copy() for e in self.native_log_history[-10:]]
@@ -1178,7 +1232,8 @@ class Guardian:
                                 ("broken_pipe","websocket_handshake","connection_reset"))
         dedicated_ready = clash_active and clash.get("ai_group") == "TunnelSentinel-OpenAI" \
             and clash.get("ai_group_type") == "Selector" and int(clash.get("candidate_count",0)) >= 2
-        live_clash_enabled = bool(dedicated_ready and self.config.get("clash_auto_failover_enabled",False))
+        live_clash_enabled = bool(dedicated_ready and self.config.get("automatic_control_enabled",False)
+                                  and self.config.get("clash_auto_failover_enabled",False))
         clash_plan = {
             "mode":"live_guarded" if live_clash_enabled else "offline_simulation_no_write",
             "would_trigger": bool(clash_active and clash_error_score >= 3),
@@ -1190,6 +1245,13 @@ class Guardian:
             "live_enabled":live_clash_enabled,
         } if clash_active else {}
         payload = {
+            "deep_connection_diagnostics": deep,
+            "automatic_control_enabled": bool(self.config.get("automatic_control_enabled",False)),
+            "tunnel_recovery_enabled": bool(self.config.get("tunnel_recovery_enabled",False)),
+            "configured_native_fallback_group": str(self.config.get("native_fallback_group","")),
+            "native_group_route_verified": False,
+            "proxy_control_mode": ("automatic" if self.config.get("automatic_control_enabled",False)
+                                   else "read_only"),
             "clash_failover_plan": clash_plan,
             "clash_failover_status": (lambda x: x if x else {})(self._load_clash_failover_status()) if clash_active else {},
             "proxy_client": "clash" if clash_active else "shadowrocket",
@@ -1225,8 +1287,8 @@ class Guardian:
             ),
             "business_status": "attention" if issues else "no_recent_errors",
             "route_management": ("clash_observe_only" if clash_active else
-                                 "native_fallback" if self.config.get("native_fallback_enabled", False)
-                                 else "legacy_external_select"),
+                                 "shadowrocket_policy_unverified" if self.config.get("native_fallback_enabled",False)
+                                 else "shadowrocket_global_monitor"),
             "native_fallback_group": str(self.config.get("native_fallback_group", "")),
             # An observation is valid only for THIS probe cycle. In
             # particular, do not leak a cached IP into failure/stale states.
@@ -1311,7 +1373,8 @@ class Guardian:
 
     def maybe_clash_failover(self) -> None:
         """One bounded real switch attempt. Only a dedicated GPT group is writable."""
-        if self.active_backend != "clash" or not self.config.get("clash_auto_failover_enabled",False):
+        if (self.active_backend != "clash" or not self.config.get("automatic_control_enabled",False)
+            or not self.config.get("clash_auto_failover_enabled",False)):
             return
         helper=DEFAULT_HOME / "clash_failover.py"
         if not helper.is_file():
@@ -1477,6 +1540,7 @@ class Guardian:
         healthy = self.path_is_healthy(results)
         self.observe_edge_incident(results, healthy)
         self.maybe_begin_ai_matrix(healthy)
+        self.maybe_begin_deep_probe(healthy)
         self.maybe_begin_native_proxy_log()
         self.maybe_begin_codex_stream()
         log_failures = self.log_watcher.read_new_failures()
@@ -1487,7 +1551,8 @@ class Guardian:
         if healthy:
             self.failure_times.clear()
             self.note_verified_healthy()
-            self.recovery_state = "recovered" if self.recovery_state != "monitoring" else "monitoring"
+            # A healthy probe is not proof that any node was switched or recovered.
+            self.recovery_state = "monitoring"
             self.recovery_reason = ""
         else:
             self.record_failures(1)

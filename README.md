@@ -279,3 +279,14 @@ swiftc -parse-as-library -O -framework AppKit \
 相关源码：`scripts/clash_openai_profile.py`（无凭据专用组和规则构造）、`scripts/clash_failover.py`（真实有界切换控制）、`scripts/clash_observer.py`（只读动态发现）。
 
 **2026-10-26 最终验收补充：** 除 Codex 流断线达到阈值之外，若现有代理端口仍可达，但 ChatGPT 公共入口连续网络传输失败（多个探测返回 HTTP 0、窗口内失败评分≥3），同样可启动替代候选检测与切换；Cloudflare 403 挑战／429 限流不会以此触发。端口从运行中的系统代理和 Mihomo 双重校验取得。最新完整回归 113/113 通过，AppKit Swift 类型检查通过。已在 Mac 上真实 `canary` 切换并恢复原节点；自然 Codex 故障下首次自动切换后的业务验收待事件发生时确认。
+
+### 2026-10-26 · P0/P1 安全重整与 ChatGPT/Codex 分层监测
+
+当前 Mac **只读监控**：`automatic_control_enabled=false`、`codex_auto_failover_enabled=false`、`clash_auto_failover_enabled=false`、`tunnel_recovery_enabled=false`。这些是彼此独立的配置：关闭总开关禁止所有节点写入；独立关闭隧道重连禁止自动调用 `shadowrocket://connect`。网络健康守护本身继续运行，系统代理、分组及订阅不因此修改。总闸门也作用于直接调用 `clash_failover.py` 的路径。新安装默认同样不会进行任何自动网络控制。
+
+- `scripts/gpt_deep_probe.py` 每 300 秒使用当前**已确认的本机代理**对五个固定目标执行带 6 秒超时的无凭据探测：ChatGPT 公共入口、`ws.chatgpt.com` WebSocket 升级握手、OpenAI API TLS、登录 TLS、桌面相关域名 TLS。仅落地响应状态、HTTP 码和总时长；不抓包、不保存 URL 请求路径/响应正文、不调用登录或 Computer Use 操作。403、404、421 分别按业务路径/鉴权和 TLS 可达性说明，不当作节点损坏，桌面域名偶发 TLS 失败亦不决定整体健康。
+- Codex 近 210 秒 `broken_pipe`、握手和连接重置来自只读 `~/.codex/logs_2.sqlite`，不含提示词或私密正文；浏览器后端失败来自现有 ChatGPT/Codex 日志的类型识别，`ResizeObserver` 布局警告不再计入业务故障。
+- 菜单 `ChatGPT / Codex 分层诊断` 显示分层结果及局限。原生 Shadowrocket `OpenAI-Resilience` 只是**历史配置**，未有当前 GPT 规则命中证明；不会显示为验证过的实际分组。纯监控期间没有恢复操作，`recovery_state=monitoring`。
+- 只保留 `~/Applications/TunnelSentinel.app` 一个可见客户端；旧独立安装器和独立分组编辑器归档 `legacy/`（不安装），过时任务文档保留作为历史但以 PROJECT_TODO 最新段落为准。之前功能性菜单条目的存在，不代表未经验证的锁屏自动切换、订阅迁移或已登录的 Computer Use 验收通过。
+
+**浏览器执行 P1 限制：** 本版本提供只读日志和连接证据，不在用户正在运行的工作页面中自动点击测试。后续若用户在普通网页实际遇到失败，按操作发生时刻与分层结果、浏览器控制后端和 Codex 日志交叉关联，严禁仅凭公共入口 200 断言 Computer Use 可用。

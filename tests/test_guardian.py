@@ -70,7 +70,7 @@ class GuardianTests(unittest.TestCase):
                 out.write("ResizeObserver loop completed with undelivered notifications\n" * 3)
             self.assertEqual(watcher.read_new_failures(), [])
             categories = {issue["category"] for issue in watcher.issue_summary()}
-            self.assertEqual(categories, {"cloudflare", "rate_limit", "thread_sync", "layout"})
+            self.assertEqual(categories, {"cloudflare", "rate_limit", "thread_sync"})
             config = dict(guardian.DEFAULTS)
             logger = logging.getLogger("issue-status-test")
             logger.addHandler(logging.NullHandler())
@@ -87,7 +87,7 @@ class GuardianTests(unittest.TestCase):
             self.assertTrue(status["healthy"])
             self.assertEqual(status["overall_status"], "attention")
             self.assertEqual(status["business_status"], "attention")
-            self.assertEqual(len(status["business_issues"]), 4)
+            self.assertEqual(len(status["business_issues"]), 3)  # Layout does not represent a network incident.
             self.assertGreater(status["pid"], 1)
 
     def test_recent_warning_survives_guardian_restart_without_auto_switch(self):
@@ -121,7 +121,7 @@ class GuardianTests(unittest.TestCase):
         watcher.issue_events.append((now, "layout"))
         watcher.issue_events.append((now, "layout"))
         self.assertEqual({item["category"] for item in watcher.issue_summary()},
-                         {"rate_limit", "layout"})
+                         {"rate_limit"})
 
     def test_status_distinguishes_failed_edge_from_business_warning(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -297,6 +297,7 @@ class GuardianTests(unittest.TestCase):
 
     def test_stale_config_nodes_are_not_used_for_rotation(self):
         config = dict(guardian.DEFAULTS)
+        config["automatic_control_enabled"] = True  # Opt-in legacy control contract.
         config["nodes"] = ["old-node-A", "old-node-B"]
         config["dry_run"] = False
         logger = logging.getLogger("stale-config-test")
@@ -315,6 +316,7 @@ class GuardianTests(unittest.TestCase):
 
     def test_no_verified_candidate_does_not_request_any_switch(self):
         config = dict(guardian.DEFAULTS)
+        config["automatic_control_enabled"] = True
         config["nodes"] = ["stale-1", "stale-2"]
         logger = logging.getLogger("no-candidate-test")
         logger.addHandler(logging.NullHandler())
@@ -383,6 +385,7 @@ class GuardianTests(unittest.TestCase):
 
     def test_native_outage_state_is_visible_before_passive_wait(self):
         config = dict(guardian.DEFAULTS)
+        config["automatic_control_enabled"] = True
         config["native_fallback_enabled"] = True
         bad = guardian.ProbeResult("edge", False, 0, False, 1)
         with tempfile.TemporaryDirectory() as tmp:
@@ -401,6 +404,7 @@ class GuardianTests(unittest.TestCase):
 
     def test_native_fallback_never_calls_broken_external_selector(self):
         cfg = dict(guardian.DEFAULTS)
+        cfg["automatic_control_enabled"] = True
         cfg["startup_grace_seconds"] = 0
         cfg["native_fallback_enabled"] = True
         cfg["native_fallback_group"] = "OpenAI-Resilience"
@@ -415,12 +419,14 @@ class GuardianTests(unittest.TestCase):
             self.assertEqual(svc.recovery_state, "native_fallback_waiting")
             svc.write_status([guardian.ProbeResult("edge", False, 0, False, 1.0)], 0, False)
             status = guardian.json.loads((Path(tmp) / "status.json").read_text())
-            self.assertEqual(status["route_management"], "native_fallback")
+            self.assertEqual(status["route_management"], "shadowrocket_policy_unverified")
+            self.assertFalse(status["native_group_route_verified"])
             self.assertEqual(status["native_fallback_group"], "OpenAI-Resilience")
             self.assertEqual(status["current_node_scope"], "shadowrocket_global_selection")
 
     def test_unverified_current_node_blocks_automatic_switch(self):
         cfg = dict(guardian.DEFAULTS)
+        cfg["automatic_control_enabled"] = True
         cfg["startup_grace_seconds"] = 0
         logger = logging.getLogger("unverified-control-test")
         logger.addHandler(logging.NullHandler())
@@ -488,6 +494,7 @@ class GuardianTests(unittest.TestCase):
 
     def test_failover_selects_next_node_and_verifies_network(self):
         config = dict(guardian.DEFAULTS)
+        config["automatic_control_enabled"] = True
         config.update(
             {
                 "nodes": ["a", "b", "c"],
@@ -567,6 +574,7 @@ class GuardianTests(unittest.TestCase):
             {
                 "tunnel_reconnect_settle_seconds": 0,
                 "tunnel_reconnect_cooldown_seconds": 0,
+                "tunnel_recovery_enabled": True,  # Explicit opt-in for test.
             }
         )
         logger = logging.getLogger("tunnel-recovery-test")

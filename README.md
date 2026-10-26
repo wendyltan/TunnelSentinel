@@ -319,3 +319,15 @@ swiftc -parse-as-library -O -framework AppKit \
 - 只读总闸门保持关闭；`tunnel_recovery_enabled=true` 为用户在前轮主动打开的当前独立设置，本次未修改。`codex_auto_failover_enabled=false`、`clash_auto_failover_enabled=false` 均不变。
 
 **原生功能实机验证（2026-10-26 21:52）：** 已在安装后签名的 TunnelSentinel.app 中实际点击“核验 Shadowrocket 当前配置规则”，`shadowrocket_rule_audit.json` 生成 `verified_rule_matches`，四个目标均 `DOMAIN-SUFFIX` → `PROXY` → 当时 `USA Seattle 07`，监控中心卡片显示正确、布局可读。实际业务 `GET /backend-api/codex/models HTTP 200` 由 Codex 客户端写入的 SQLite 日志提供，和匿名 `GET /` 完全分开。此功能既不自动轮询 Shadowrocket 图形界面，也不读取 TLS 明文或用户令牌。
+
+### 2026-10-26 · P0 工作流状态与故障时间线（Shadowrocket-first）
+
+本阶段**没有添加新的代理核心、没有修改 Shadowrocket 的节点与订阅、没有开启自动节点切换**。只增强原 Guardian 的监控和现有单一 TunnelSentinel.app。
+
+- **四轴证据状态** `status.json:workflow_health`：基础网络、ChatGPT、Codex、Computer Use 各自拥有状态、来源、观察时间与简明说明。`ok` 只用于本地代理加 ChatGPT 公共入口的基础连通性；ChatGPT 的匿名 200 和 Codex 模型目录 200/WS 建连日志只能得到 `partial`（部分证据），不代表已登录聊天、模型生成、工具调用或浏览器执行已成功。没有近期客户端真实执行证据时用 `unknown`，遇到真实客户端错误用 `degraded`，网络基础连通失败用 `failed`。快照超过有效期后 UI 统一显示“尚未验证”，旧成功记录不能漂绿。
+- **故障时间线** `workflow_timeline.json` 与 `status.json:workflow_timeline`：记录代理接管者改变、网络/业务证据状态转变、Codex 最新断流、浏览器后端客户端日志、限流/挑战和两次确认的公共出口区域变化。带来源和时间，按事件时间戳去重；发生确定的网络故障、Codex 断流或浏览器控制错误才建立事故条目，连续两轮无相同症状结束（注意：症状消失并不证明真实业务完成）。最多保留 7 天/240 条本地结构化事件，面板显示最近 12 条；文件权限 0600，不保存令牌、Cookie、聊天正文、任意路径、完整客户端日志、出口 IP。守护进程重启之后沿用历史状态，不丢事故。
+- **监测稳定性 P0**：旧菜单每 5 秒在 AppKit 主线程等待两次 `launchctl` 导致卡顿；现改为后台 QoS utility 查询、15 秒缓存，UI 主线程只消费快照，删除空转的 2 秒节点 Timer。原开关异步保存设置机制保留。
+- **故障期间诊断不再被暂停**：`maybe_begin_deep_probe(healthy=False)` 仍允许有限频率的 TLS/HTTP/WS 匿名探测（最短约 90 秒），而不是基础入口坏时拒绝深度诊断。代理监听端口失联时也会异步安排该诊断和 Codex 只读日志读取；不会借此模拟登录、切节点或操作浏览器。
+- 监控中心首页改为工作流四轴状态；“故障时间线”标签置于原节点详情之前，保留原生 Shadowrocket 规则核验操作。其他页面仍展示匿名和真实客户端只读数据的来源区别。
+
+**已知保留限制：** 还没有受信任的 ChatGPT 已登录回复成功事件、Computer Use 真实点击完成事件或 Codex 完整模型任务完成证据，因此对应轴不会凭模拟 GET 判“正常”。Mac 休眠/唤醒宽限与跨网络事故聚合算法仍值得下一阶段专项测试，本次只完成无故障注入的运行验收。

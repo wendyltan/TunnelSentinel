@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 from typing import Deque, Iterable, Optional
+from workflow_health import evaluate as evaluate_workflow_health, update_timeline as update_workflow_timeline
 from urllib.parse import urlencode, urlparse
 
 
@@ -749,11 +750,15 @@ class Guardian:
                 self.deep_probe_running=False
 
     def maybe_begin_deep_probe(self, network_healthy: bool) -> None:
-        if not self.config.get("deep_connection_probe_enabled",True) or not network_healthy:
+        if not self.config.get("deep_connection_probe_enabled",True):
             return
         now=time.monotonic()
+        # During a fault we NEED layer evidence. Retain bounded throttling
+        # rather than stopping all diagnostics when the public probe fails.
+        interval=(max(90,min(180,int(self.config.get("deep_connection_probe_interval_seconds",300))))
+                  if not network_healthy else max(180,int(self.config.get("deep_connection_probe_interval_seconds",300))))
         with self.deep_probe_lock:
-            if self.deep_probe_running or now-self.deep_probe_last_run<max(180,int(self.config.get("deep_connection_probe_interval_seconds",300))):
+            if self.deep_probe_running or now-self.deep_probe_last_run<interval:
                 return
             self.deep_probe_running=True
             self.deep_probe_last_run=now
@@ -1207,6 +1212,18 @@ class Guardian:
             deep={"source":"bounded_public_tls_probes","state":"pending_or_stale",
                   "targets":[],"limitations":"no_authenticated_computer_use_test"}
         deep["running"]=deep_running
+        now=time.time()
+        workflow_axes=evaluate_workflow_health(now=now,healthy=healthy,
+                         proxy_available=proxy_available,deep=deep,stream=stream_info,issues=issues)
+        try:
+            timeline=update_workflow_timeline(self.status_path.parent / "workflow_timeline.json",
+                         now=now, axes=workflow_axes,
+                         proxy_client=self.active_backend if self.active_backend == "clash" else "shadowrocket",
+                         stream=stream_info,issues=issues,egress_history=self.egress_changed_at)
+        except (OSError,ValueError,TypeError):
+            self.logger.warning("workflow timeline unavailable; monitoring continues")
+            timeline={"source":"tunnelsentinel_workflow_evidence_v1","events":[],
+                      "active_incident":None,"state":"unavailable"}
         with self.native_log_lock:
             native = self.native_log_latest.copy()
             native_events = [e.copy() for e in self.native_log_history[-10:]]
@@ -1245,6 +1262,8 @@ class Guardian:
             "live_enabled":live_clash_enabled,
         } if clash_active else {}
         payload = {
+            "workflow_health": workflow_axes,
+            "workflow_timeline": timeline,
             "deep_connection_diagnostics": deep,
             "automatic_control_enabled": bool(self.config.get("automatic_control_enabled",False)),
             "tunnel_recovery_enabled": bool(self.config.get("tunnel_recovery_enabled",False)),
@@ -1465,6 +1484,9 @@ class Guardian:
                 self.recovery_reason = "发现节点变化，等待新节点验证"
             self.current_node = observed_node
         proxy_available = proxy_endpoint_available(self.config["proxy"])
+        if not proxy_available:
+            self.maybe_begin_deep_probe(False)
+            self.maybe_begin_codex_stream()
         tunnel_stop_reason = "none"
         if not proxy_available and self.active_backend == "clash":
             # Never launch Shadowrocket to 'repair' an absent Clash listener.

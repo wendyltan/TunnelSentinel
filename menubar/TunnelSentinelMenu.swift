@@ -34,6 +34,8 @@ private struct Snapshot {
     var tunnelRecoveryEnabled = false
     var deepConnection: [String: Any] = [:]
     var codexStream: [String: Any] = [:]
+    var workflowHealth: [String: Any] = [:]
+    var workflowTimeline: [String: Any] = [:]
     var clashMode = ""
     var clashGroup = ""
     var clashGroupType = ""
@@ -135,6 +137,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     private var lastRenderedState = ""
     private var guardianRunning = false
     private var guardianPaused = false
+    private var servicePollRunning = false
+    private var serviceLastPollAt = Date.distantPast
     private var logWindow: NSWindow?
     private var logTextView: NSTextView?
     private var logPicker: NSPopUpButton?
@@ -175,9 +179,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         statusTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshStatus() }
         }
-        nodeTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshNode() }
-        }
     }
 
     private func runLaunchctl(_ arguments: [String]) -> (Int32, String) {
@@ -205,14 +206,50 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return r.0 == 0 && r.1.contains("state = running")
     }
 
+    // launchctl is a process call and may stall. Check it off the main
+    // thread, at most once per 15 seconds; draw the UI from cached values.
+    private func pollGuardianServiceIfNeeded() {
+        guard !servicePollRunning, Date().timeIntervalSince(serviceLastPollAt) >= 15 else { return }
+        servicePollRunning = true
+        serviceLastPollAt = Date()
+        let label = guardianLabel
+        let uid = getuid()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            func query(_ args: [String]) -> (Int32, String) {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                process.arguments = args
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = pipe
+                do {
+                    try process.run()
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    process.waitUntilExit()
+                    return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+                } catch { return (-1, "") }
+            }
+            let paused = query(["print-disabled", "gui/\(uid)"]).1
+                .contains("\"\(label)\" => disabled")
+            let result = query(["print", "gui/\(uid)/\(label)"])
+            let running = result.0 == 0 && result.1.contains("state = running")
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.guardianPaused = paused
+                self.guardianRunning = running
+                self.servicePollRunning = false
+                self.rebuildMenu()
+            }
+        }
+    }
+
     private func refreshStatus() {
+        pollGuardianServiceIfNeeded()
         let path = base.appendingPathComponent("status.json")
         guard let bytes = try? Data(contentsOf: path),
               let values = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any]
         else {
             snapshot = Snapshot()
-            guardianPaused = isPaused()
-            guardianRunning = isRunning()
             rebuildMenu()
             return
         }
@@ -240,6 +277,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         }
         next.deepConnection = values["deep_connection_diagnostics"] as? [String:Any] ?? [:]
         next.codexStream = values["codex_stream_diagnostics"] as? [String:Any] ?? [:]
+        next.workflowHealth = values["workflow_health"] as? [String:Any] ?? [:]
+        next.workflowTimeline = values["workflow_timeline"] as? [String:Any] ?? [:]
         next.clashAutoSwitchMode = values["clash_auto_switch_mode"] as? String ?? "simulation_only"
         if let failover = values["clash_failover_status"] as? [String:Any] {
             next.clashFailoverState = failover["state"] as? String ?? ""
@@ -347,8 +386,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             }
         }
         snapshot = next
-        guardianPaused = isPaused()
-        guardianRunning = isRunning()
         rebuildMenu()
         if dashboardWindow?.isVisible == true { refreshDashboard() }
     }
@@ -696,6 +733,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             snapshot.proxyClient,snapshot.clashMode,snapshot.clashGroup,snapshot.clashParent,
             String(snapshot.automaticControlEnabled),String(snapshot.tunnelRecoveryEnabled),
             String(describing:snapshot.deepConnection),String(describing:snapshot.codexStream),
+            String(describing:snapshot.workflowHealth),String(describing:snapshot.workflowTimeline),
             snapshot.clashAutoSwitchMode,snapshot.clashFailoverState,
             snapshot.clashFailoverFrom,snapshot.clashFailoverTo,String(snapshot.clashFailoverActions),
             snapshot.clashSelectedNode,String(snapshot.clashActiveConnections),
@@ -1020,7 +1058,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                                     color: .labelColor, frame: NSRect(x: 28, y: 578, width: 330, height: 31)))
         background.addSubview(label("看得懂的状态 · 真实来源 · 不干预代理", font: .systemFont(ofSize: 11.5),
                                     color: .secondaryLabelColor, frame: NSRect(x: 28, y: 556, width: 440, height: 18)))
-        let tabs = NSSegmentedControl(labels: ["概览", "连接诊断", "节点与事件", "设置"],
+        let tabs = NSSegmentedControl(labels: ["概览", "连接诊断", "故障时间线", "设置"],
                                       trackingMode: .selectOne,
                                       target: self, action: #selector(dashboardTabChanged(_:)))
         tabs.frame = NSRect(x: 27, y: 510, width: 566, height: 32)
@@ -1120,33 +1158,48 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func workflowCard(_ key: String, title: String,
+                              in doc: NSView, y: inout CGFloat) {
+        let axis = snapshot.workflowHealth[key] as? [String:Any] ?? [:]
+        let state = snapshot.fresh ? (axis["state"] as? String ?? "unknown") : "unknown"
+        let display: (String, NSColor)
+        switch state {
+        case "ok": display = ("基础连通正常", .systemGreen)
+        case "partial": display = ("部分证据", .systemBlue)
+        case "degraded": display = ("出现异常", .systemOrange)
+        case "failed": display = ("连接失败", .systemRed)
+        default: display = ("尚未验证", .secondaryLabelColor)
+        }
+        let caption = snapshot.fresh ? (axis["label"] as? String ?? "缺少可用的业务证据") : "监控快照已过期，等待新采样"
+        dashboardRow(title, explanation: caption,
+                     value: display.0, tone: display.1, in: doc, y: &y)
+    }
+
     private func refreshDashboard() {
         guard let scroll = dashboardScroll, dashboardWindow != nil else { return }
         let previousY = scroll.contentView.bounds.origin.y
         let doc = DashboardFlippedView(frame: NSRect(x: 0, y: 0, width: 558, height: 1250))
         var y: CGFloat = 8
-        let online = snapshot.fresh && snapshot.networkHealthy
         let diagnostic = snapshot.deepConnection
         let tests = diagnostic["targets"] as? [[String:Any]] ?? []
         switch dashboardSelection {
         case 0:
-            dashboardHeading("当前连接", in: doc, y: &y)
-            dashboardRow("系统代理", explanation: "macOS 当前监控对象，不代表机场节点名称",
+            dashboardHeading("工作流健康度", in: doc, y: &y)
+            workflowCard("network", title: "系统代理与公共网络", in: doc, y: &y)
+            workflowCard("chatgpt", title: "ChatGPT", in: doc, y: &y)
+            workflowCard("codex", title: "Codex", in: doc, y: &y)
+            workflowCard("computer_use", title: "Computer Use", in: doc, y: &y)
+            dashboardNote("蓝色“部分证据”不表示业务已经完成；灰色“尚未验证”表示没有当前有效的真实执行记录。不会自动打开网页或消耗模型额度。", in: doc, y: &y)
+            dashboardHeading("监测运行方式", in: doc, y: &y)
+            dashboardRow("系统代理", explanation: "取自 macOS 当前监控路径，不代表机场节点",
                          value: snapshot.proxyClient == "clash" ? "Clash Verge" : "Shadowrocket",
                          in: doc, y: &y)
-            dashboardRow("ChatGPT 公共入口", explanation: "监测从当前代理到 ChatGPT 的公共 HTTPS 路径",
-                         value: online ? "基础连通正常" : "需要检查", tone: online ? .systemGreen : .systemOrange,
+            dashboardRow("自动节点控制", explanation: "健康检测不会修改你使用的代理节点",
+                         value: snapshot.automaticControlEnabled ? "已授权" : "仅监测",
+                         tone: .systemBlue, in: doc, y: &y)
+            dashboardRow("公共出口", explanation: "只是出口地区，不代表 GPT 实际节点",
+                         value: snapshot.egressObserved ? shortEgress : "当前无新鲜数据",
                          in: doc, y: &y)
-            dashboardRow("出口位置", explanation: "出口 IP 的地理观测，不是订阅中的节点名称",
-                         value: snapshot.egressObserved ? shortEgress : "未获得数据", in: doc, y: &y)
-            dashboardHeading("运行方式", in: doc, y: &y)
-            dashboardRow("代理控制", explanation: "健康检查照常运行，不会自动更换节点",
-                         value: snapshot.automaticControlEnabled ? "已开启" : "仅监测", tone: .systemBlue,
-                         in: doc, y: &y)
-            dashboardRow("Codex", explanation: "流连接错误来自只读本地日志，不包含聊天内容",
-                         value: (snapshot.codexStream["state"] as? String) == "ok" ? "日志可读取" : "暂无有效日志",
-                         in: doc, y: &y)
-            dashboardNote("需要查看某个服务的 TLS、WebSocket 或实际规则细节？切换到上方“连接诊断”和“节点与事件”。", in: doc, y: &y)
         case 1:
             dashboardHeading("ChatGPT · OpenAI", in: doc, y: &y)
             if tests.isEmpty {
@@ -1212,6 +1265,42 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                              in: doc, y: &y)
             }
         case 2:
+            dashboardHeading("故障时间线 · 最近 7 天", in: doc, y: &y)
+            let timeline = snapshot.workflowTimeline
+            let events = timeline["events"] as? [[String:Any]] ?? []
+            let incident = timeline["active_incident"] as? [String:Any]
+            if let incident {
+                let start = incident["started_at"] as? Int ?? 0
+                let when = DateFormatter.localizedString(from: Date(timeIntervalSince1970: TimeInterval(start)),
+                                                         dateStyle: .none, timeStyle: .short)
+                dashboardRow("当前有待核实的异常", explanation: "首次观察 \(when) · 可查看下方证据",
+                             value: "事件进行中", tone: .systemOrange, in: doc, y: &y)
+            }
+            if events.isEmpty { dashboardNote("尚无被记录的故障变化。这不代表 ChatGPT、Codex 或 Computer Use 的业务验收已经通过。", in: doc, y: &y) }
+            for event in events.suffix(12).reversed() {
+                let seconds = event["at"] as? Int ?? 0
+                let when = DateFormatter.localizedString(from: Date(timeIntervalSince1970: TimeInterval(seconds)),
+                                                         dateStyle: .short, timeStyle: .short)
+                let title = event["title"] as? String ?? "状态变化"
+                let level = event["level"] as? String ?? "info"
+                let source = event["source"] as? String ?? "unknown"
+                let names = [
+                    "anonymous_public_probe":"ChatGPT 公开入口探测",
+                    "codex_client_read_only_sqlite":"Codex 本机请求日志",
+                    "codex_read_only_sqlite":"Codex 本机连接日志",
+                    "client_log_classifier":"客户端异常日志",
+                    "macos_system_proxy":"macOS 系统代理",
+                    "guardian_public_edge_and_local_proxy":"代理与公共入口",
+                    "public_trace_two_sample_confirmation":"公共出口二次确认",
+                    "tunnelsentinel_workflow_evidence_v1":"TunnelSentinel 观察记录"
+                ]
+                let origin = names[source] ?? "本机监控状态"
+                dashboardRow(title, explanation: "\(when) · 证据：\(origin)",
+                             value: level == "warning" ? "需关注" : "已记录",
+                             tone: level == "warning" ? .systemOrange : .secondaryLabelColor,
+                             in: doc, y: &y)
+            }
+            dashboardNote("事件在本机保留最多 7 天，只记录来源、状态和时间；不会保存聊天内容、请求头或账户资料。", in: doc, y: &y)
             dashboardHeading("节点识别 · 按证据显示", in: doc, y: &y)
             if snapshot.routeManagement == "clash_observe_only" {
                 dashboardRow("Clash 策略组选中", explanation: "Mihomo 官方 API 当前组内选择",

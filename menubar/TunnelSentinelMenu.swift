@@ -1134,7 +1134,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         background.addSubview(tabs)
         dashboardTabs = tabs
         let scroll = NSScrollView(frame: NSRect(x: 27, y: 32, width: 568, height: 463))
-        scroll.hasVerticalScroller = true
+        scroll.scrollerStyle = .overlay
+        scroll.hasVerticalScroller = tab != 0
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         background.addSubview(scroll)
@@ -1290,29 +1291,29 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         let bad = [network,codex,browser].contains("failed") ||
                   [network,codex,browser].contains("degraded")
         let title = bad ? "部分连接需要关注" :
-                    network == "ok" ? "基础网络已连接" : "正在确认连接状态"
-        let sub = bad ? "检测到异常，请在时间线查看证据" :
-                  "业务可用性以实际客户端记录为准"
-        let tone: NSColor = bad ? .systemOrange : network == "ok" ? .systemGreen : .secondaryLabelColor
-        let hero = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 92),
-                                      color: .clear, cornerRadius: 14, surface: .hero)
-        hero.addSubview(AppearanceFillView(frame: NSRect(x: 17, y: 62, width: 9, height: 9),
-                                         color: tone, cornerRadius: 4.5))
-        hero.addSubview(label("当前工作流", font: .systemFont(ofSize: 11, weight: .medium),
-                              color: .secondaryLabelColor, frame: NSRect(x: 34, y: 57, width: 140, height: 19)))
-        hero.addSubview(label(title, font: .systemFont(ofSize: 22, weight: .semibold),
-                              color: .labelColor, frame: NSRect(x: 18, y: 25, width: 488, height: 33)))
-        hero.addSubview(label(sub, font: .systemFont(ofSize: 11.5),
-                              color: .secondaryLabelColor, frame: NSRect(x: 19, y: 9, width: 510, height: 17)))
-        doc.addSubview(hero)
-        y += 105
+                    network == "ok" ? "基础网络已连接" : "连接状态待确认"
+        let subtitle = bad ? "最近的异常和恢复记录可在时间线查看" :
+                       "已登录业务状态以真实客户端记录为准"
+        let tone: NSColor = bad ? .systemOrange :
+                            network == "ok" ? .systemGreen : .secondaryLabelColor
+        let header = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 84),
+                                        color: .clear, cornerRadius: 13, surface: .hero)
+        header.addSubview(AppearanceFillView(frame: NSRect(x: 19, y: 49, width: 9, height: 9),
+                                            color: tone, cornerRadius: 4.5))
+        header.addSubview(label(title, font: .systemFont(ofSize: 20, weight: .semibold),
+                                color: .labelColor,
+                                frame: NSRect(x: 37, y: 39, width: 475, height: 30)))
+        header.addSubview(label(subtitle, font: .systemFont(ofSize: 11.5),
+                                color: .secondaryLabelColor,
+                                frame: NSRect(x: 20, y: 12, width: 508, height: 20)))
+        doc.addSubview(header)
+        y += 95
     }
 
     private func dashboardHealthTile(_ key: String, title: String, symbol: String,
                                      x: CGFloat, y: CGFloat, in doc: NSView) {
         let (state, detail) = axisData(key)
-        let card = AppearanceFillView(frame: NSRect(x: x, y: y, width: 267, height: 88),
-                                      color: .clear, cornerRadius: 12, surface: .tile)
+        let card = NSView(frame: NSRect(x: x, y: y, width: 267, height: 84))
         let image = NSImageView(frame: NSRect(x: 16, y: 59, width: 17, height: 18))
         image.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
         image.contentTintColor = .secondaryLabelColor
@@ -1435,6 +1436,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     private func refreshDashboard() {
         guard let scroll = dashboardScroll, dashboardWindow != nil else { return }
         let previousY = scroll.contentView.bounds.origin.y
+        // The entire overview is a fixed, scroller-free viewport.
+        scroll.hasVerticalScroller = dashboardSelection != 0
         let doc = DashboardFlippedView(frame: NSRect(x: 0, y: 0, width: 558, height: 1250))
         var y: CGFloat = 8
         let diagnostic = snapshot.deepConnection
@@ -1443,22 +1446,27 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         case 0:
             overviewHero(in: doc, y: &y)
             dashboardHeading("服务状态", in: doc, y: &y)
-            let firstRow = y
+            let panel = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 168),
+                                           color: .clear, cornerRadius: 12, surface: .tile)
             dashboardHealthTile("network", title: "基础网络", symbol: "network",
-                                x: 3, y: firstRow, in: doc)
+                                x: 0, y: 84, in: panel)
             dashboardHealthTile("chatgpt", title: "ChatGPT", symbol: "bubble.left.and.bubble.right",
-                                x: 286, y: firstRow, in: doc)
-            y += 99
+                                x: 282, y: 84, in: panel)
             dashboardHealthTile("codex", title: "Codex", symbol: "terminal",
-                                x: 3, y: y, in: doc)
+                                x: 0, y: 0, in: panel)
             dashboardHealthTile("computer_use", title: "Computer Use", symbol: "macwindow",
-                                x: 286, y: y, in: doc)
-            y += 104
+                                x: 282, y: 0, in: panel)
+            panel.addSubview(AppearanceFillView(frame: NSRect(x: 14, y: 83.5, width: 521, height: 1),
+                                                color: .separatorColor.withAlphaComponent(0.25)))
+            panel.addSubview(AppearanceFillView(frame: NSRect(x: 274, y: 13, width: 1, height: 141),
+                                                color: .separatorColor.withAlphaComponent(0.25)))
+            doc.addSubview(panel)
+            y += 180
             dashboardHeading("最近一次连接事件", in: doc, y: &y)
             let allEvents = snapshot.workflowTimeline["events"] as? [[String:Any]] ?? []
             let recent = allEvents.filter { ["codex_remote_session","codex_stream_error","client_log_issue"].contains($0["kind"] as? String ?? "") }
                                   .max { ($0["at"] as? Int ?? 0) < ($1["at"] as? Int ?? 0) }
-            let latest = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 94),
+            let latest = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 82),
                                             color: .clear, cornerRadius: 12, surface: .event)
             if let item = recent {
                 let isRemote = (item["kind"] as? String) == "codex_remote_session"
@@ -1466,19 +1474,19 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                 let labelText = isRemote ? (ended ? "Codex 已重新连接" : "Codex 连接中断") :
                                 (item["title"] as? String ?? "客户端连接异常")
                 latest.addSubview(label(labelText, font: .systemFont(ofSize: 14, weight: .medium),
-                                        color: .labelColor, frame: NSRect(x: 17, y: 56, width: 435, height: 25)))
+                                        color: .labelColor, frame: NSRect(x: 17, y: 46, width: 435, height: 25)))
                 let summary = isRemote && ended
                     ? "持续 \(item["duration_seconds"] as? Int ?? 0) 秒 · 通过 Codex 客户端日志确认"
                     : "有新的客户端状态记录，详情在时间线"
                 latest.addSubview(label(summary, font: .systemFont(ofSize: 11.5),
                                         color: .secondaryLabelColor,
-                                        frame: NSRect(x: 18, y: 33, width: 504, height: 20)))
+                                        frame: NSRect(x: 18, y: 25, width: 504, height: 20)))
             } else {
                 latest.addSubview(label("暂无可确认的连接故障", font: .systemFont(ofSize: 14, weight: .medium),
-                                        color: .labelColor, frame: NSRect(x: 17, y: 54, width: 440, height: 25)))
+                                        color: .labelColor, frame: NSRect(x: 17, y: 46, width: 440, height: 25)))
                 latest.addSubview(label("没有异常日志不等于所有业务都已验证。",
                                         font: .systemFont(ofSize: 11), color: .secondaryLabelColor,
-                                        frame: NSRect(x: 18, y: 30, width: 502, height: 19)))
+                                        frame: NSRect(x: 18, y: 24, width: 502, height: 19)))
             }
             let go = NSButton(title: "打开时间线", target: self,
                               action: #selector(openTimelineFromOverview(_:)))
@@ -1488,11 +1496,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             go.frame = NSRect(x: 13, y: 6, width: 115, height: 24)
             latest.addSubview(go)
             doc.addSubview(latest)
-            y += 108
-            doc.addSubview(label("基础可达 ≠ 已登录业务成功 · 真实客户端证据单独显示",
-                                 font: .systemFont(ofSize: 10.5), color: .tertiaryLabelColor,
-                                 frame: NSRect(x: 9, y: y, width: 535, height: 18)))
-            y += 25
+            y += 88
         case 2:
             dashboardHeading("ChatGPT · OpenAI", in: doc, y: &y)
             let deepAt = diagnostic["checked_at"] as? Int ?? 0
@@ -1621,7 +1625,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             }
             dashboardNote("连接恢复不等于模型任务已完成；无法从时间接近推定节点变化导致断线。", in: doc, y: &y)
         case 3:
-            dashboardHeading("节点识别 · 按证据显示", in: doc, y: &y)
+            dashboardHeading("当前节点与规则", in: doc, y: &y)
+            dashboardNote("只展示真实的全局节点、出口和规则核验。当前未取得逐节点 GPT 业务成功证据，因此不提供节点排名。", in: doc, y: &y)
             if snapshot.routeManagement == "clash_observe_only" {
                 dashboardRow("Clash 策略组选中", explanation: "Mihomo 官方 API 当前组内选择",
                              value: snapshot.clashSelectedNode.isEmpty ? "暂无读取" : snapshot.clashSelectedNode,

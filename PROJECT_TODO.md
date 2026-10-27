@@ -176,3 +176,11 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [x] 技术日志、节点规则、设置从日常事故列表剥离
 - [x] Swift 类型检查与 Python 回归，签名 App 实机打开并截图核对
 - [ ] 候选增强：按需查看 24h/7d 的真实事件统计，须在足量数据时才开放
+
+
+### 2026-10-27 · Impeccable 监控中心 V4
+- [x] Impeccable + frontend-design 原生视觉重审：移除四张均质卡片，四服务合为一个信息面板
+- [x] 总览移除显眼的常驻滚动条，首屏完整阅读；长页保持 macOS 原生 overlay 滚动
+- [x] 撤下所有没有真实业务能力支持的推荐、测速导入、等待候选提示和快捷入口
+- [x] 保留可用的 Shadowrocket 当前规则核验、全局节点、公共出口与客户端事件
+- [ ] 无扰动 GPT per-node 业务验证：缺少当前 Shadowrocket 官方可验证接口，未上线任何推荐

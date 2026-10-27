@@ -468,3 +468,12 @@ Always re-check `git status -sb`, HEAD, status.json and running LaunchAgents bef
 - New tab order: 总览 / 时间线 / 诊断 / 节点 / 设置. Overview: evidence-safe baseline headline, SF Symbols 2x2 workflow status tiles, recent observed fault with clickable timeline navigation. Timeline: date buckets, useful faults rather than raw state churn, per-incident recovery duration and status, expand/collapse details via stable event IDs; no task-success or causal overclaims. Native semantic color surfaces and subtle outlines.
 - On-device System Events opened the signed app and AX clicked time-line details; checked actual screenshot files ~/.cache/tunnelsentinel-v3-final-overview.png, ~/.cache/tunnelsentinel-v3-final-timeline.png, ~/.cache/tunnelsentinel-v3-expanded.png. Initial first-screen recent event was clipped; compact card dimensions corrected and verified. Dynamic Codex reconnect events remained live (11 sec and 7 sec recovery sample).
 - Regressions: Python 146/146 PASS, four Swift modules typecheck PASS, diff check PASS; signed app installed with backup via install-menubar.sh. Guardian and Shadowrocket left running unchanged. Final subtle-outline deploy and source commit being verified.
+
+
+## 2026-10-27 — Impeccable UI v4 and remove manual node advisor
+
+User rejects generic four-card grid, huge overview scrollbar and nonworking node recommendation controls. Mac Codex Impeccable 4.5.2 at ~/.agents/skills/impeccable/SKILL.md; called its context and read distill, operate and craft-floor. Also reviewed ~/.codex/skills/frontend-design/SKILL.md.
+
+New overview: succinct hero, four statuses as a single group divided by fine hairlines, last true event; fits 463pt first viewport and no overview scroller. Long pages use native overlay scrollers. Remove manual latency advice GUI/import dialog and its app/install dependencies, along with experiments' untracked source files; preserve already working one-shot Shadowrocket rule audit and actual public exit data. GitHub LOWERTOP wiki/lazy.conf documents native url-test/fallback, not authenticated GPT per-node task success or a trusted Shadowrocket per-node API. Do not start another core or change user rules.
+
+Verify live signed App UI screenshots and config invariance; separate from the previous uncommitted P1 work and clearly document its retirement.

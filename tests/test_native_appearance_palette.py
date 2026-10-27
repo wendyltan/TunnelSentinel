@@ -26,7 +26,7 @@ class AppearanceTests(unittest.TestCase):
             self.assertLess(max(rgb)-min(rgb),30)
 
     def test_no_large_cards_keep_system_control_color(self):
-        self.assertIn('cornerRadius: 14, surface: .hero', SRC)
+        self.assertIn('cornerRadius: 13, surface: .hero', SRC)
         self.assertIn('cornerRadius: 12, surface: .tile', SRC)
         self.assertIn('cornerRadius: 12, surface: .event', SRC)
         self.assertIn('cornerRadius: 9, surface: .row', SRC)

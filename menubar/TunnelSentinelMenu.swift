@@ -29,7 +29,10 @@ private struct Snapshot {
     var failures = 0
     var routeManagement = "legacy_external_select"
     var nativeFallbackGroup = ""
-    var proxyClient = "shadowrocket"
+    var proxyClient = "unknown"
+    var systemProxyState = ""
+    var systemProxyEndpoint = ""
+    var systemProxyType = ""
     var automaticControlEnabled = false
     var tunnelRecoveryEnabled = false
     var deepConnection: [String: Any] = [:]
@@ -315,7 +318,10 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         next.failures = values["recent_failure_score"] as? Int ?? 0
         next.routeManagement = values["route_management"] as? String ?? "legacy_external_select"
         next.nativeFallbackGroup = values["native_fallback_group"] as? String ?? ""
-        next.proxyClient = values["proxy_client"] as? String ?? "shadowrocket"
+        next.proxyClient = values["proxy_client"] as? String ?? "unknown"
+        next.systemProxyState = values["system_proxy_state"] as? String ?? ""
+        next.systemProxyEndpoint = values["system_proxy_endpoint"] as? String ?? ""
+        next.systemProxyType = values["system_proxy_type"] as? String ?? ""
         next.automaticControlEnabled = values["automatic_control_enabled"] as? Bool ?? false
         next.tunnelRecoveryEnabled = values["tunnel_recovery_enabled"] as? Bool ?? false
         if let bytes = try? Data(contentsOf: base.appendingPathComponent("config.json")),
@@ -443,7 +449,11 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         // separately labelled *global* selection in status.json. Avoid a
         // redundant cross-App protected-preferences read from this menu app:
         // macOS may show a broad "access data from other apps" TCC prompt.
-        if snapshot.routeManagement == "shadowrocket_policy_unverified" || snapshot.routeManagement == "clash_observe_only" { return }
+        guard snapshot.proxyClient == "shadowrocket" else {
+            liveNode = nil
+            return
+        }
+        if snapshot.routeManagement == "shadowrocket_policy_unverified" { return }
         guard !nodeLookupBusy && !nodeLookupSuspended else { return }
         if let last = lastNodeReadFailedAt, Date().timeIntervalSince(last) < 20 { return }
         nodeLookupBusy = true
@@ -505,7 +515,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     }
 
     private var nodePending: Bool {
-        if snapshot.routeManagement == "native_fallback" || snapshot.routeManagement == "shadowrocket_policy_unverified" || snapshot.routeManagement == "clash_observe_only" { return false }
+        if snapshot.proxyClient != "shadowrocket" ||
+            snapshot.routeManagement == "native_fallback" ||
+            snapshot.routeManagement == "shadowrocket_policy_unverified" { return false }
         guard let liveNode, !liveNode.isEmpty else { return false }
         return liveNode != snapshot.checkedNode
     }
@@ -513,7 +525,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         // Native fallback selects egress independently from the global node.
         // An unreadable global-node preference is not a network fault and
         // should not override a passing OpenAI edge + quiet client diagnostics.
-        if snapshot.routeManagement == "native_fallback" || snapshot.routeManagement == "shadowrocket_policy_unverified" || snapshot.routeManagement == "clash_observe_only" { return false }
+        if snapshot.proxyClient != "shadowrocket" ||
+            snapshot.routeManagement == "native_fallback" ||
+            snapshot.routeManagement == "shadowrocket_policy_unverified" { return false }
         return liveNode == nil && !snapshot.nodeVerified
     }
 
@@ -556,6 +570,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     }
 
     private var globalNode: String {
+        guard snapshot.proxyClient == "shadowrocket" else { return "不适用" }
         if let liveNode, !liveNode.isEmpty { return liveNode }
         if snapshot.fresh && !snapshot.checkedNode.isEmpty {
             return snapshot.nodeVerified
@@ -597,6 +612,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         if guardianPaused { return "守护已暂停" }
         if !guardianRunning { return "守护服务未运行" }
         if !snapshot.fresh { return "等待最新检测" }
+        if snapshot.overall == "unknown" { return "系统代理路由待确认" }
         if nodePending { return "节点已切换，等待检测" }
         if networkReviewPending { return "公共入口偶发超时 · 正在复核" }
         if !snapshot.networkHealthy && recoveryBlocked { return "自动恢复受阻 · 需要处理" }
@@ -610,6 +626,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         if guardianPaused { return "监控已暂停 · 当前代理未受影响" }
         if !guardianRunning { return "后台守护未运行，无法读取实时诊断" }
         if !snapshot.fresh { return "没有足够新的健康检测记录" }
+        if snapshot.overall == "unknown" {
+            return "当前系统代理可能使用 PAC 或自动发现，不能假定 ChatGPT 失败"
+        }
         if nodePending { return "节点名称已同步，新节点的链路健康尚未确认" }
         if networkReviewPending { return "已记录一次真实探测超时，等待再次检测；尚未确认持续故障" }
         if !snapshot.networkHealthy && recoveryBlocked {
@@ -619,6 +638,12 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         if !snapshot.networkHealthy { return "公共入口不可达 · 等待有界恢复检查" }
         if snapshot.business == "attention" { return "公共入口正常 · 客户端日志有待核实事件" }
         if nodeUnverified { return "Shadowrocket 节点名读取受限；链路仍在独立监测" }
+        if snapshot.proxyClient == "system_proxy" {
+            return "系统代理 \(snapshot.systemProxyEndpoint) · 公开入口实际探测"
+        }
+        if snapshot.proxyClient == "system_route" {
+            return "未配置显式系统代理 · 检测当前直连或 TUN 出站"
+        }
         if snapshot.routeManagement == "clash_observe_only" {
             return "Clash \(snapshot.clashMode.uppercased()) · AI → \(snapshot.clashParent) · 仅监测"
         }
@@ -634,6 +659,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         if guardianPaused { return "已暂停" }
         if !guardianRunning { return "离线" }
         if !snapshot.fresh { return "待检测" }
+        if snapshot.overall == "unknown" { return "路由待确认" }
         if nodePending { return "检测中" }
         if networkReviewPending { return "复核中" }
         if !snapshot.networkHealthy && recoveryBlocked { return "需人工处理" }
@@ -645,6 +671,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
 
     private var menuBarStateMarker: String {
         if !snapshot.fresh || guardianPaused || !guardianRunning { return "○" }
+        if snapshot.overall == "unknown" { return "○" }
         if nodePending { return "◐" }
         if networkReviewPending { return "◐" }
         if !snapshot.networkHealthy || snapshot.business == "attention" { return "!" }
@@ -836,7 +863,10 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             && !snapshot.egressCountry.isEmpty ? " · GPT \(shortEgress)" : ""
         statusItem.button?.title = "\(menuBarStateMarker) \(statusLabel)\(compactEdge)"
         statusItem.button?.contentTintColor = nil
-        let selectedDescription = snapshot.routeManagement == "clash_observe_only"
+        let selectedDescription = snapshot.proxyClient != "shadowrocket" &&
+                                  snapshot.routeManagement != "clash_observe_only"
+            ? "当前 macOS 系统代理：\(snapshot.systemProxyEndpoint.isEmpty ? "未解析 / 无显式端口" : snapshot.systemProxyEndpoint)；不能由端口推断机场节点"
+            : snapshot.routeManagement == "clash_observe_only"
             ? "Clash AI→\(snapshot.clashParent)；最近 GPT 请求节点：\(snapshot.backendVerified ? snapshot.actualBackendName : "未核实")；候选：\(snapshot.clashCandidateCount)"
             : nativeGroupUIRecent
             ? "Shadowrocket 分组界面近期选中：\(snapshot.nativeGroupUINode)（仅代表界面读数）"
@@ -845,9 +875,11 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             : "Shadowrocket 当前 GPT 请求节点未知；仅能观察公共出口。详情见监控中心。"
         let routeNodeDescription = snapshot.routeManagement == "clash_observe_only"
             ? "Clash Proxies 当前选中：\(snapshot.clashSelectedNode)"
-            : "Shadowrocket 全局节点：\(globalNode)"
+            : snapshot.proxyClient == "shadowrocket"
+            ? "Shadowrocket 全局节点：\(globalNode)"
+            : "当前系统出站：\(snapshot.systemProxyEndpoint.isEmpty ? "直连 / TUN 或未解析" : snapshot.systemProxyEndpoint)"
         statusItem.button?.toolTip = "TunnelSentinel · \(statusLabel)\n\(headline)\n\(selectedDescription)\nOpenAI 公共出口：\(observedEgress)\n\(routeNodeDescription)\n\(detail)"
-        statusItem.button?.setAccessibilityLabel("TunnelSentinel，\(statusLabel)，OpenAI 出口 \(shortEgress)，全局节点 \(globalNode)")
+        statusItem.button?.setAccessibilityLabel("TunnelSentinel，\(statusLabel)，OpenAI 出口 \(shortEgress)，\(routeNodeDescription)")
         statusItem.button?.setAccessibilityValue("\(headline)；\(detail)")
         let menu = NSMenu()
         let card = NSMenuItem()
@@ -862,7 +894,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                                    on: snapshot.automaticControlEnabled,
                                    enabled: autoSwitchSupported && !configUpdateBusy, tag: 1))
         menu.addItem(switchMenuRow("隧道掉线重连",
-                                   subtitle: "只处理本地代理断开，不切换节点",
+                                   subtitle: snapshot.proxyClient == "shadowrocket" ?
+                                       "Shadowrocket 意外断开时尝试重连" : "其他代理仅监测；不操作 Shadowrocket",
                                    on: snapshot.tunnelRecoveryEnabled,
                                    enabled: snapshot.proxyClient == "shadowrocket" && !configUpdateBusy, tag: 2))
         menu.addItem(.separator())
@@ -1627,14 +1660,22 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         case 3:
             dashboardHeading("当前节点与规则", in: doc, y: &y)
             dashboardNote("只展示真实的全局节点、出口和规则核验。当前未取得逐节点 GPT 业务成功证据，因此不提供节点排名。", in: doc, y: &y)
-            if snapshot.routeManagement == "clash_observe_only" {
+            if snapshot.routeManagement == "system_proxy_observe_only" {
+                dashboardRow("系统 HTTPS 代理",
+                             explanation: "来自 macOS 当前系统设置；端口不是机场节点名",
+                             value: snapshot.systemProxyEndpoint.isEmpty ? "未知" : snapshot.systemProxyEndpoint,
+                             in: doc, y: &y)
+                dashboardRow("实际运营节点",
+                             explanation: "当前代理软件没有可验证的请求级节点接口",
+                             value: "无法读取，不作推测", in: doc, y: &y)
+            } else if snapshot.routeManagement == "clash_observe_only" {
                 dashboardRow("Clash 策略组选中", explanation: "Mihomo 官方 API 当前组内选择",
                              value: snapshot.clashSelectedNode.isEmpty ? "暂无读取" : snapshot.clashSelectedNode,
                              in: doc, y: &y)
                 dashboardRow("GPT 实际请求", explanation: "只有 Mihomo 活跃连接链能确认请求经过的节点",
                              value: snapshot.backendVerified ? snapshot.actualBackendName : "未见可确认请求",
                              in: doc, y: &y)
-            } else {
+            } else if snapshot.proxyClient == "shadowrocket" {
                 dashboardRow("Shadowrocket 全局选择", explanation: "仅作为全局节点记录，不表示 GPT 分组的选路",
                              value: globalNode, in: doc, y: &y)
                 dashboardHeading("Shadowrocket 当前规则核验", in: doc, y: &y)
@@ -1658,6 +1699,11 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                 doc.addSubview(button)
                 y += 39
                 dashboardNote("仅在你主动点击时短暂切换到 Shadowrocket 的“测试规则”界面；不读取账号凭证、不修改配置、不自动轮询。规则结果最多保留 10 分钟。", in: doc, y: &y)
+            } else {
+                dashboardRow("当前系统出站模式",
+                             explanation: "无显式代理可能意味着直连或 TUN，非节点验证",
+                             value: snapshot.systemProxyState == "direct_or_tun" ? "直连 / TUN" : "待解析",
+                             in: doc, y: &y)
             }
             dashboardHeading("网络出口与事件", in: doc, y: &y)
             dashboardRow("本次观测出口", explanation: "Cloudflare 公共 trace，不能推断实际机场节点",
@@ -1683,7 +1729,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                             isOn: snapshot.automaticControlEnabled,
                             canEdit: autoSwitchSupported && !configUpdateBusy,
                             tag: 1, in: doc, y: &y)
-            dashboardSwitch("隧道掉线重连", description: "与切换节点不同；仅在本地代理意外断开时尝试重连",
+            dashboardSwitch("隧道掉线重连", description: snapshot.proxyClient == "shadowrocket" ?
+                            "Shadowrocket 隧道重连；不切换节点" :
+                            "仅 Shadowrocket 可使用；其他代理仍正常接受监测",
                             isOn: snapshot.tunnelRecoveryEnabled,
                             canEdit: snapshot.proxyClient == "shadowrocket" && !configUpdateBusy,
                             tag: 2, in: doc, y: &y)

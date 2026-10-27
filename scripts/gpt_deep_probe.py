@@ -49,9 +49,11 @@ def test_target(item, proxy:str)->dict:
     name,url,kind=item
     # This does not reuse ChatGPT/Codex's authenticated endpoint path or token.
     method='HTTP/1.1 GET / + Upgrade: websocket (anonymous synthetic)' if kind=='wss_handshake' else ('HTTPS GET /cdn-cgi/trace (public)' if kind=='http200' else 'HTTPS GET / (anonymous TLS/HTTP)')
-    cmd=['/usr/bin/curl','--silent','--show-error','--proxy',proxy,
-         '--connect-timeout',str(CONNECT_TIMEOUT_SECONDS),'--max-time',str(MAX_REQUEST_SECONDS),'--output','/dev/null',
-         '--write-out','%{http_code} %{time_total}']
+    cmd=['/usr/bin/curl','--silent','--show-error',
+         '--proxy',proxy] if proxy else ['/usr/bin/curl','--silent','--show-error','--noproxy','*']
+    cmd.extend(['--connect-timeout',str(CONNECT_TIMEOUT_SECONDS),
+                '--max-time',str(MAX_REQUEST_SECONDS),'--output','/dev/null',
+                '--write-out','%{http_code} %{time_total}'])
     if kind=='wss_handshake':
         cmd.extend(['--http1.1','--header','Connection: Upgrade',
                     '--header','Upgrade: websocket','--header','Sec-WebSocket-Version: 13',
@@ -72,8 +74,15 @@ def test_target(item, proxy:str)->dict:
 
 def scan(proxy:str)->dict:
     parsed=urlparse(proxy)
-    if parsed.scheme not in ('http','https') or parsed.hostname not in ('127.0.0.1','localhost') or not parsed.port:
-        return {'source':'bounded_public_tls_probes','state':'invalid_local_proxy','checked_at':int(time.time()),'targets':[]}
+    # Guardian passes ONLY the vetted macOS system proxy or an empty string
+    # for the current no-explicit-proxy/TUN route. No subscription URLs or
+    # embedded proxy credentials are accepted.
+    allowed = (not proxy) or (parsed.scheme in ('http','https','socks5','socks5h')
+              and parsed.hostname and parsed.port and 1 <= parsed.port <= 65535
+              and parsed.username is None and parsed.password is None
+              and not parsed.path and not parsed.query and not parsed.fragment)
+    if not allowed:
+        return {'source':'bounded_public_tls_probes','state':'invalid_system_proxy','checked_at':int(time.time()),'targets':[]}
     with ThreadPoolExecutor(max_workers=3) as pool:
         outcomes=list(pool.map(lambda item:test_target(item,proxy),TARGETS))
     states={x['name']:x['state'] for x in outcomes}

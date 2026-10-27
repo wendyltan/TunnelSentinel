@@ -184,3 +184,14 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [x] 撤下所有没有真实业务能力支持的推荐、测速导入、等待候选提示和快捷入口
 - [x] 保留可用的 Shadowrocket 当前规则核验、全局节点、公共出口与客户端事件
 - [ ] 无扰动 GPT per-node 业务验证：缺少当前 Shadowrocket 官方可验证接口，未上线任何推荐
+
+### 2026-10-27 · 跨代理软件通用健康检测
+- [x] 实际确认端口 7890 经当前代理到 ChatGPT HTTP 200，旧 1082 关闭导致假离线
+- [x] 每个 Guardian 周期解析 macOS 实际 HTTPS/HTTP/SOCKS 代理，不再硬编码 Shadowrocket 探测端口
+- [x] direct/TUN 无显式代理时直接做当前网络出站检测
+- [x] PAC/自动发现不可靠解析时显示 unknown，避免伪造连接失败
+- [x] 切换代理自动隔离旧失败计数、Shadowrocket 节点信息与异步深层/AI 探测历史
+- [x] 原生 GUI 支持通用代理的实际端口显示，其他代理下隐藏 Shadowrocket 专用规则操作
+- [x] Shadowrocket 自动节点开关保持关闭，原隧道重连设置保留但不得用于其他代理
+- [x] Python 全量回归、Swift 类型检查、签名 App 实机部署、节点/总览截图
+- [ ] PAC / 自动发现按实际目标域名使用 CFNetwork 解析；当前标示待确认，不冒充真实结果

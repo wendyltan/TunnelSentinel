@@ -384,7 +384,7 @@ class GuardianTests(unittest.TestCase):
             self.assertFalse(svc.last_public_edge_incident["native_backend_switch_verified"])
 
     def test_native_outage_state_is_visible_before_passive_wait(self):
-        config = dict(guardian.DEFAULTS)
+        config = dict(guardian.DEFAULTS, proxy_backend_auto_detect_enabled=False)
         config["automatic_control_enabled"] = True
         config["native_fallback_enabled"] = True
         bad = guardian.ProbeResult("edge", False, 0, False, 1)
@@ -438,7 +438,7 @@ class GuardianTests(unittest.TestCase):
             self.assertEqual(svc.recovery_state, "node_unverified")
 
     def test_manual_node_change_suppresses_churn(self):
-        cfg = dict(guardian.DEFAULTS)
+        cfg = dict(guardian.DEFAULTS, proxy_backend_auto_detect_enabled=False)
         cfg["startup_grace_seconds"] = 0
         logger = logging.getLogger("manual-change-test")
         logger.addHandler(logging.NullHandler())
@@ -534,7 +534,7 @@ class GuardianTests(unittest.TestCase):
             probe.assert_not_called()
 
     def test_cycle_syncs_manual_shadowrocket_node(self):
-        config = dict(guardian.DEFAULTS)
+        config = dict(guardian.DEFAULTS, proxy_backend_auto_detect_enabled=False)
         logger = logging.getLogger("node-sync-test")
         logger.addHandler(logging.NullHandler())
         good = guardian.ProbeResult("edge", True, 200, False, 0.1)
@@ -550,7 +550,7 @@ class GuardianTests(unittest.TestCase):
             self.assertTrue(payload["current_node_verified"])
 
     def test_manual_tunnel_stop_suppresses_automatic_recovery(self):
-        config = dict(guardian.DEFAULTS)
+        config = dict(guardian.DEFAULTS, proxy_backend_auto_detect_enabled=False)
         logger = logging.getLogger("manual-stop-test")
         logger.addHandler(logging.NullHandler())
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -569,7 +569,7 @@ class GuardianTests(unittest.TestCase):
             )
 
     def test_failed_tunnel_is_reconnected_and_verified(self):
-        config = dict(guardian.DEFAULTS)
+        config = dict(guardian.DEFAULTS, proxy_backend_auto_detect_enabled=False)
         config.update(
             {
                 "tunnel_reconnect_settle_seconds": 0,

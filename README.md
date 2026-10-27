@@ -350,3 +350,15 @@ swiftc -parse-as-library -O -framework AppKit \
 节点页仅显示真实可用的 Shadowrocket 全局选择、已证实的按需规则核验、公共出口与已采集客户端事件。已删除先前实验性的人工测速输入、35ms 低延迟推荐、候选数据等待卡片和无效快捷入口；不再把网络层测速排名冒充 GPT 已登录业务可用性。旧的测试性 P1 代码不再编译或安装。独立的 GPT 业务证据判定器留在研究代码中，不向生产 UI 提供虚假结果。
 
 GitHub 参考：LOWERTOP/Shadowrocket wiki 和 lazy.conf 显示 url-test/fallback 可自动连通性检测与切换，但没有证据表明 Shadowrocket 当前 Mac 版有能独立、安全且逐节点确认登录态 Codex 任务成功的 API。MetaCubeX/Mihomo 官方 Controller 可做 per-node 网络测试，但用户现役是 Shadowrocket，本次不会另起代理内核或偷换。
+
+### 2026-10-27 · 系统当前代理自适应监测（App v1.6.1）
+
+TunnelSentinel 的基础网络、ChatGPT 公共入口、Codex TLS/匿名 WebSocket 和 AI 公开入口矩阵已不再默认绑定 Shadowrocket 的历史 1082 端口。Guardian 在每次检测前只读 macOS 当前生效的 scutil --proxy，优先选择 HTTPS 代理，其次 HTTP、SOCKS；通过实际选中的代理发送请求。未配置显式代理时探测当前 direct/TUN 路由。若遇到需要逐目标解析的 PAC/自动发现代理，显示“路由待确认”，绝不把无法解析静态设置直接判断为 ChatGPT 不通。
+
+安全约束：只有当前系统代理端口匹配原 Shadowrocket 配置时，才允许该软件特有的规则观测和原已开启的隧道重连；其他代理一律只读，绝不触发 Shadowrocket 的重连、启动、节点切换或配置访问。Mihomo 只有在自有只读 Controller 明确确认它占用了同一当前系统代理端口时才可标记为 Clash，否则只是“通用系统代理”。不能由端口推测机场实际节点。
+
+代理切换时清除上一个代理的全局节点推断、深层结果、AI 矩阵和失败计数。异步检测带路由世代号，旧出口的任务完成也不能写入新出口状态。curl 的深层测试同样支持 SOCKS5h 和无显式代理的 TUN/direct，不接受任何包含订阅密钥的代理地址。
+
+2026-10-27 20:08 CST 实机故障还原：scutil 显示 HTTPS/HTTP 127.0.0.1:7890、SOCKS 127.0.0.1:7891；此前 Guardian 固守 127.0.0.1:1082，真实 curl 连接旧端口失败，导致当前软件的公共入口“离线”误报。通过系统当前 7890 请求 https://chatgpt.com/cdn-cgi/trace 返回 HTTP 200、约 0.196 秒。修复重载后 Guardian 显示 proxy_client=system_proxy、system_proxy_endpoint=127.0.0.1:7890、network=ok、chatgpt=partial；真实入口 GET HTTP200、约 0.23 秒。菜单栏 Node 页面也已实机打开，显示“系统 HTTPS 代理 127.0.0.1:7890”以及“实际运营节点无法读取，不作推测”。原配置安全开关未更改。
+
+适用范围：macOS 系统当前 HTTP/HTTPS/SOCKS 代理、或可由系统直连探测的 TUN/VPN。代理软件自行管理且没有接入 macOS 系统路由的应用内私有连接无法自动归属；PAC/自动发现未来需调用 macOS CFNetwork 针对每个检测网址单独解析，否则只能保守显示 unknown。即使公共探测成功，也不证明已登录 ChatGPT 或 Computer Use 业务成功。

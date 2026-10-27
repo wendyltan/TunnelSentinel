@@ -17,8 +17,8 @@ class MenuSurfaceTests(unittest.TestCase):
     def test_native_fallback_does_not_request_other_apps_data(self):
         reader = SOURCE.split("private func refreshNode() {", 1)[1].split(
             "private var nodePending:", 1)[0]
-        self.assertIn('if snapshot.routeManagement == "shadowrocket_policy_unverified" || snapshot.routeManagement == "clash_observe_only" { return }', reader)
-        self.assertLess(reader.index('if snapshot.routeManagement == "shadowrocket_policy_unverified" || snapshot.routeManagement == "clash_observe_only" { return }'),
+        self.assertIn('guard snapshot.proxyClient == "shadowrocket" else {', reader)
+        self.assertLess(reader.index('guard snapshot.proxyClient == "shadowrocket" else {'),
                         reader.index("process.executableURL"))
 
 

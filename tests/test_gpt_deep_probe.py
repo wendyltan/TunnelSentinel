@@ -23,12 +23,18 @@ class DeepProbeTests(unittest.TestCase):
   self.assertEqual(probe.classify(0,101,'wss_handshake'),'upgrade_accepted')
   self.assertNotEqual(probe.classify(0,404,'wss_handshake'),'upgrade_accepted')
 
- def test_fixed_destination_allowlist_and_local_proxy_only(self):
+ def test_fixed_destination_allowlist_and_current_system_proxy_only(self):
   self.assertEqual(len(probe.TARGETS),6)
   self.assertIn(('codex_websocket','https://chatgpt.com/','wss_handshake'),probe.TARGETS)
   self.assertTrue(all(x[1].startswith('https://') for x in probe.TARGETS))
-  for host in ('http://8.8.8.8:1082','https://proxy.example.com:1234','', 'socks5://127.0.0.1:1082'):
-   self.assertEqual(probe.scan(host)['state'],'invalid_local_proxy')
+  for host in ('http://user:password@127.0.0.1:1234','ftp://127.0.0.1:8888','http://127.0.0.1:1234/path'):
+   self.assertEqual(probe.scan(host)['state'],'invalid_system_proxy')
+  with mock.patch.object(probe,'test_target',
+                         side_effect=lambda item, proxy: {'name':item[0],'state':'reachable'}) as tested:
+   for value in ('http://127.0.0.1:7890','socks5h://127.0.0.1:7891',''):
+    x=probe.scan(value)
+    self.assertEqual(x['state'],'completed')
+   self.assertEqual(tested.call_count,18)
 
  def test_monitor_only_disable_all_route_controls(self):
   self.assertFalse(g.DEFAULTS['automatic_control_enabled'])

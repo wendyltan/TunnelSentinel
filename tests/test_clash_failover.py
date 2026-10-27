@@ -66,6 +66,6 @@ class RealClashTests(unittest.TestCase):
  def test_guardian_disabled_by_default_for_other_macs(self):
   self.assertFalse(g.DEFAULTS.get('clash_auto_failover_enabled'))
   self.assertFalse(g.DEFAULTS.get('automatic_control_enabled'))
-  self.assertFalse(g.DEFAULTS.get('proxy_backend_auto_detect_enabled'))
+  self.assertTrue(g.DEFAULTS.get('proxy_backend_auto_detect_enabled'))
 
 if __name__=='__main__':unittest.main()

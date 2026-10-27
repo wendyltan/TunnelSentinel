@@ -27,11 +27,15 @@ class GuardianClashTests(unittest.TestCase):
 
     def test_detected_clash_never_performs_shadowrocket_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:
-            obj=self.service(tmp);(Path(tmp)/'clash_observer.py').touch()
-            payload={'source':'mihomo_unix_readonly','active':True,'proxy_url':'http://127.0.0.1:7897','api_healthy':True,'mode':'rule',
-                     'observed_at':1710000000,'ai_group':'AI','ai_selection':'Proxies','selected_node':'nodeB',
+            obj=self.service(tmp)
+            payload={'source':'mihomo_unix_readonly','active':True,
+                     'proxy_url':'http://127.0.0.1:7897','api_healthy':True,
+                     'ai_group':'AI','ai_selection':'Proxies','selected_node':'nodeB',
                      'active_request_node':'nodeB','active_gpt_connections':3,'eligible_count':5}
-            with mock.patch.object(guardian,'DEFAULT_HOME',Path(tmp)),mock.patch.object(guardian.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps(payload))):
+            with mock.patch.object(obj,'_inspect_system_route',
+                        return_value={'source':'macos_system_proxy','state':'explicit',
+                                      'proxy_url':'http://127.0.0.1:7897','endpoint':'127.0.0.1:7897'}), \
+                 mock.patch.object(obj,'_inspect_mihomo',return_value=payload):
                 obj.refresh_active_backend()
             self.assertEqual(obj.active_backend,'clash')
             self.assertEqual(obj.config['proxy'],'http://127.0.0.1:7897')
@@ -47,22 +51,24 @@ class GuardianClashTests(unittest.TestCase):
             self.assertTrue(j['clash_failover_plan']['would_trigger'])
             self.assertFalse(j['clash_failover_plan']['will_change_routes'])
 
-    def test_api_failure_does_not_fake_shadowrocket_ownership(self):
+    def test_api_failure_keeps_actual_system_route_without_faking_owner(self):
         with tempfile.TemporaryDirectory() as tmp:
             obj=self.service(tmp);obj.active_backend='clash';obj.config['proxy']='http://127.0.0.1:7897'
-            (Path(tmp)/'clash_observer.py').touch()
-            payload={'source':'mihomo_unix_readonly','active':False,'reason':'TimeoutError'}
-            with mock.patch.object(guardian,'DEFAULT_HOME',Path(tmp)),mock.patch.object(guardian.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps(payload))):
+            with mock.patch.object(obj,'_inspect_system_route',
+                        return_value={'source':'macos_system_proxy','state':'explicit',
+                                      'proxy_url':'http://127.0.0.1:7897','endpoint':'127.0.0.1:7897'}), \
+                 mock.patch.object(obj,'_inspect_mihomo',return_value={'active':False,'reason':'TimeoutError'}):
                 obj.refresh_active_backend()
-            self.assertEqual(obj.active_backend,'clash')
+            self.assertEqual(obj.active_backend,'system_proxy')
             self.assertEqual(obj.config['proxy'],'http://127.0.0.1:7897')
 
-    def test_only_verified_original_port_allows_switch_back(self):
+    def test_original_port_returns_shadowrocket_only_when_selected_in_system_proxy(self):
         with tempfile.TemporaryDirectory() as tmp:
             obj=self.service(tmp);obj.active_backend='clash';obj.config['proxy']='http://127.0.0.1:7897'
-            (Path(tmp)/'clash_observer.py').touch()
-            payload={'source':'mihomo_unix_readonly','active':False,'reason':'proxy_port_mismatch','system_proxy_port':1082}
-            with mock.patch.object(guardian,'DEFAULT_HOME',Path(tmp)),mock.patch.object(guardian.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps(payload))),mock.patch.object(guardian,'proxy_endpoint_available',return_value=True):
+            with mock.patch.object(obj,'_inspect_system_route',
+                        return_value={'source':'macos_system_proxy','state':'explicit',
+                                      'proxy_url':'http://127.0.0.1:1082','endpoint':'127.0.0.1:1082'}), \
+                 mock.patch.object(obj,'_inspect_mihomo',side_effect=AssertionError('no need')):
                 obj.refresh_active_backend()
             self.assertEqual(obj.active_backend,'shadowrocket')
             self.assertEqual(obj.config['proxy'],'http://127.0.0.1:1082')

@@ -62,7 +62,7 @@ DEFAULTS = {
     # in recent Shadowrocket/macOS builds. Keep tunnel reconnection independent.
     "native_fallback_enabled": False,
     "native_fallback_group": "",
-    "proxy_backend_auto_detect_enabled": False,
+    "proxy_backend_auto_detect_enabled": True,
     "clash_auto_failover_enabled": False,
     # A single explicit safety gate for ALL node-changing controllers.
     # Defaults read-only; the tunnel reconnect feature has its own switch.
@@ -231,8 +231,6 @@ def curl_probe(name: str, url: str, proxy: str, websocket: bool = False,
             "/usr/bin/curl",
             "--silent",
             "--show-error",
-            "--proxy",
-            proxy,
             "--connect-timeout",
             "5",
             "--max-time",
@@ -244,6 +242,10 @@ def curl_probe(name: str, url: str, proxy: str, websocket: bool = False,
             "--write-out",
             "%{http_code}",
         ]
+        # Explicit proxy follows macOS system route. If no explicit proxy is
+        # configured, check the CURRENT transparent TUN/direct path without
+        # inheriting unrelated HTTP_PROXY environment variables.
+        command[3:3] = ["--proxy", proxy] if proxy else ["--noproxy", "*"]
         if websocket:
             command.extend(
                 [
@@ -614,6 +616,8 @@ class Guardian:
         self.config = config
         self.shadowrocket_proxy = str(config.get("proxy", ""))
         self.active_backend = "shadowrocket"
+        self.system_route_observation: dict = {}
+        self.route_generation = 0
         self.clash_observation: dict = {}
         self.logger = logger
         self.status_path = status_path
@@ -735,11 +739,11 @@ class Guardian:
         threading.Thread(target=self._codex_stream_worker,daemon=True,
                          name="CodexStreamHealthObserver").start()
 
-    def _deep_probe_worker(self) -> None:
+    def _deep_probe_worker(self, generation: int, proxy: str) -> None:
         helper=DEFAULT_HOME / "gpt_deep_probe.py"
         outcome={"source":"bounded_public_tls_probes","state":"unavailable"}
         try:
-            proc=subprocess.run([sys.executable,str(helper),str(self.config["proxy"])],
+            proc=subprocess.run([sys.executable,str(helper),proxy],
                                 capture_output=True,text=True,check=False,timeout=28)
             if proc.returncode==0:
                 parsed=json.loads(proc.stdout)
@@ -748,7 +752,8 @@ class Guardian:
             pass
         finally:
             with self.deep_probe_lock:
-                self.deep_probe_result=outcome
+                if generation == self.route_generation:
+                    self.deep_probe_result=outcome
                 self.deep_probe_running=False
 
     def maybe_begin_deep_probe(self, network_healthy: bool) -> None:
@@ -764,8 +769,9 @@ class Guardian:
                 return
             self.deep_probe_running=True
             self.deep_probe_last_run=now
-        threading.Thread(target=self._deep_probe_worker,daemon=True,
-                         name="GPTAndCodexLayeredReadOnlyProbe").start()
+        threading.Thread(target=self._deep_probe_worker,
+                         args=(self.route_generation,str(self.config["proxy"])),
+                         daemon=True,name="GPTAndCodexLayeredReadOnlyProbe").start()
 
     def _native_proxy_log_worker(self) -> None:
         # The guard process NEVER opens the protected Shadowrocket directory.
@@ -831,7 +837,7 @@ class Guardian:
                 self.native_log_running = False
 
     def maybe_begin_native_proxy_log(self) -> None:
-        if not (self.active_backend != "clash"
+        if not (self.active_backend == "shadowrocket"
                 and self.config.get("native_fallback_enabled", False)
                 and self.config.get("native_proxy_log_reader_enabled", False)
                 and self.config.get("native_fallback_group")):
@@ -850,10 +856,13 @@ class Guardian:
             name="TunnelSentinel-NativeNodeReader",
         ).start()
 
-    def _ai_matrix_runner(self) -> None:
+    def _ai_matrix_runner(self, generation: int | None = None, proxy: str | None = None) -> None:
+        if generation is None:
+            generation = self.route_generation
+        if proxy is None:
+            proxy = str(self.config["proxy"])
         # Only public Cloudflare trace endpoints. Every URL is a fixed code
         # constant, never a URL from untrusted HTML, subscription or response.
-        proxy = str(self.config["proxy"])
         def check(site: tuple[str, str]) -> dict:
             name, domain = site
             result = curl_probe("ai-" + domain,
@@ -899,9 +908,10 @@ class Guardian:
                     "scope": "current_route_only_not_native_fallback_proof",
                 }
             with self.ai_matrix_lock:
-                self.ai_matrix_checks = checks
-                self.endpoint_method_audit = audit
-                self.ai_matrix_checked_at = time.time()
+                if generation == self.route_generation:
+                    self.ai_matrix_checks = checks
+                    self.endpoint_method_audit = audit
+                    self.ai_matrix_checked_at = time.time()
         except Exception as exc:
             self.logger.warning("AI routing supplemental checks failed: %s",
                                 type(exc).__name__)
@@ -919,8 +929,9 @@ class Guardian:
                 return
             self.ai_matrix_started_at = now
             self.ai_matrix_running = True
-        threading.Thread(target=self._ai_matrix_runner, daemon=True,
-                         name="TunnelSentinel-AIRoutingAudit").start()
+        threading.Thread(target=self._ai_matrix_runner,
+                         args=(self.route_generation,str(self.config["proxy"])),
+                         daemon=True,name="TunnelSentinel-AIRoutingAudit").start()
 
     def known_good_candidates(self) -> list[str]:
         # Revalidate age at least every 5 minutes while the daemon is running.
@@ -1074,7 +1085,7 @@ class Guardian:
             self.failure_times.popleft()
 
     def should_switch(self) -> bool:
-        if not self.config.get("automatic_control_enabled",False):
+        if not self.config.get("automatic_control_enabled",False) or self.active_backend != "shadowrocket":
             return False
         # A native Shadowrocket fallback policy controls actual egress nodes.
         # Never race it with the legacy shadowrocket://select control channel.
@@ -1219,10 +1230,18 @@ class Guardian:
         workflow_axes=evaluate_workflow_health(now=now,healthy=healthy,
                          proxy_available=proxy_available,deep=deep,stream=stream_info,
                          issues=issues,network_failure_streak=network_failure_streak)
+        if self.active_backend == "system_unresolved":
+            # PAC/auto-discovery cannot be faithfully resolved by reading static
+            # scutil values. Unknown != actual failed user connections.
+            workflow_axes["network"]={"state":"unknown","label":"系统代理路由尚未解析",
+                                      "source":"macos_system_proxy","observed_at":int(now),
+                                      "detail":"PAC 或系统代理信息暂不可读"}
+            workflow_axes["chatgpt"]={"state":"unknown","label":"未检测当前实际出站路径",
+                                      "source":"none","observed_at":0,"detail":""}
         try:
             timeline=update_workflow_timeline(self.status_path.parent / "workflow_timeline.json",
                          now=now, axes=workflow_axes,
-                         proxy_client=self.active_backend if self.active_backend == "clash" else "shadowrocket",
+                         proxy_client=self.active_backend,
                          stream=stream_info,issues=issues,egress_history=self.egress_changed_at)
         except (OSError,ValueError,TypeError):
             self.logger.warning("workflow timeline unavailable; monitoring continues")
@@ -1237,13 +1256,16 @@ class Guardian:
         except (TypeError,ValueError):
             native_age = float("inf")
         native_recent = (
-            self.config.get("native_proxy_log_reader_enabled",False)
+            self.active_backend == "shadowrocket"
+            and self.config.get("native_proxy_log_reader_enabled",False)
             and self.config.get("native_fallback_enabled",False)
             and healthy and proxy_available
             and 0 <= native_age <= max(60,int(self.config.get("native_proxy_node_recent_seconds",600)))
             and native.get("group") == self.config.get("native_fallback_group")
         )
         clash_active = self.active_backend == "clash"
+        shadowrocket_active = self.active_backend == "shadowrocket"
+        system_route = self.system_route_observation
         clash = self.clash_observation if clash_active else {}
         clash_node = str(clash.get("active_request_node", "")) if clash_active else ""
         clash_request_verified = bool(clash_node and int(clash.get("active_gpt_connections",0)) > 0
@@ -1271,13 +1293,19 @@ class Guardian:
             "deep_connection_diagnostics": deep,
             "automatic_control_enabled": bool(self.config.get("automatic_control_enabled",False)),
             "tunnel_recovery_enabled": bool(self.config.get("tunnel_recovery_enabled",False)),
+            "proxy_client": self.active_backend,
+            "system_proxy_source": system_route.get("source","unverified"),
+            "system_proxy_state": system_route.get("state","legacy_configured"),
+            "system_proxy_endpoint": system_route.get("endpoint",""),
+            "system_proxy_type": system_route.get("proxy_type",""),
+            "monitor_proxy_url": (str(self.config.get("proxy",""))
+                                  if self.active_backend != "system_unresolved" else ""),
             "configured_native_fallback_group": str(self.config.get("native_fallback_group","")),
             "native_group_route_verified": False,
             "proxy_control_mode": ("automatic" if self.config.get("automatic_control_enabled",False)
                                    else "read_only"),
             "clash_failover_plan": clash_plan,
             "clash_failover_status": (lambda x: x if x else {})(self._load_clash_failover_status()) if clash_active else {},
-            "proxy_client": "clash" if clash_active else "shadowrocket",
             "clash_observation": {k:clash.get(k) for k in
                 ("source","observed_at","active","api_healthy","mode","tun_enabled",
                  "ai_group","ai_group_type","ai_selection","child_group_type",
@@ -1290,8 +1318,10 @@ class Guardian:
             "native_proxy_log_reader_enabled": bool(self.config.get("native_proxy_log_reader_enabled",False)),
             "native_proxy_log_recent": bool(native_recent),
             "native_proxy_log_read_status": native_reader_problem or "ok",
-            "native_proxy_last_connection": native,
-            "native_proxy_node_history": native_events,
+            # Old Shadowrocket native-log evidence is historical, never the
+            # current per-request identity of an unrelated proxy client.
+            "native_proxy_last_connection": native if shadowrocket_active else {},
+            "native_proxy_node_history": native_events if shadowrocket_active else [],
             "native_proxy_node_scope": "per-request name from native log, not continuous backend state",
             "ai_matrix_enabled": bool(self.config.get("ai_matrix_enabled", False)),
             "ai_matrix_source": "local_public_trace_requests",
@@ -1308,6 +1338,7 @@ class Guardian:
             # an HTTP 200 cannot become "GPT business healthy".
             "overall_status": (
                 "offline" if workflow_axes["network"]["state"] == "failed"
+                else "unknown" if workflow_axes["network"]["state"] == "unknown"
                 else "verifying" if workflow_axes["network"]["state"] == "partial"
                 else "attention" if issues or any(
                     workflow_axes[k]["state"]=="degraded" for k in ("codex","computer_use"))
@@ -1321,9 +1352,11 @@ class Guardian:
             ),
             "business_evidence_scope": "no_authenticated_ChatGPT_or_Computer_Use_completion_proof",
             "public_edge_failure_streak": network_failure_streak if not healthy else 0,
-            "route_management": ("clash_observe_only" if clash_active else
-                                 "shadowrocket_policy_unverified" if self.config.get("native_fallback_enabled",False)
-                                 else "shadowrocket_global_monitor"),
+            "route_management": (
+                "clash_observe_only" if clash_active else
+                "shadowrocket_policy_unverified" if shadowrocket_active and self.config.get("native_fallback_enabled",False)
+                else "shadowrocket_global_monitor" if shadowrocket_active else
+                "system_proxy_observe_only"),
             "native_fallback_group": str(self.config.get("native_fallback_group", "")),
             # An observation is valid only for THIS probe cycle. In
             # particular, do not leak a cached IP into failure/stale states.
@@ -1338,9 +1371,11 @@ class Guardian:
                                                  if clash_request_verified else native.get("observed_at","") if native and not clash_active else ""),
             "openai_group_backend_source": ("mihomo_active_connections" if clash_request_verified else "unverified") if clash_active
                                          else "shadowrocket_native_proxy_log" if native_recent else "unverified",
-            "current_node_scope": "clash_selected_group" if clash_active else (
-                "shadowrocket_global_selection" if self.config.get("native_fallback_enabled", False)
-                else "shadowrocket_selected_server"),
+            "current_node_scope": (
+                "clash_selected_group" if clash_active else
+                "shadowrocket_global_selection" if shadowrocket_active and self.config.get("native_fallback_enabled",False)
+                else "shadowrocket_selected_server" if shadowrocket_active
+                else "system_proxy_endpoint_only"),
             "recovery_state": self.recovery_state,
             "recovery_reason": self.recovery_reason,
             "recovery_attempt_count": self.recovery_attempt_count,
@@ -1357,13 +1392,15 @@ class Guardian:
             "public_edge_outage_pending": self.edge_outage_started_at is not None,
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "healthy": healthy,
-            "current_node": clash.get("selected_node", "") if clash_active else self.current_node,
-            "current_node_verified": bool(clash.get("selected_node") and clash.get("api_healthy") is True) if clash_active else self.current_node_verified,
+            "current_node": clash.get("selected_node", "") if clash_active else self.current_node if shadowrocket_active else "",
+            "current_node_verified": (bool(clash.get("selected_node") and clash.get("api_healthy") is True)
+                                      if clash_active else self.current_node_verified if shadowrocket_active else False),
             "recent_failure_score": len(self.failure_times),
             "new_log_failures": log_failures,
             "last_switch_monotonic": self.last_switch_at,
             "proxy_available": proxy_available,
-            "tunnel_state": "manual_pause" if self.manual_pause else ("running" if proxy_available else "down"),
+            "tunnel_state": ("manual_pause" if self.manual_pause and shadowrocket_active else
+                             "running" if proxy_available else "unverified" if self.active_backend == "system_unresolved" else "down"),
             "tunnel_stop_reason": tunnel_stop_reason,
             "manual_pause": self.manual_pause,
             "last_tunnel_reconnect_monotonic": self.last_tunnel_reconnect_at,
@@ -1430,53 +1467,104 @@ class Guardian:
         except (OSError,ValueError,subprocess.SubprocessError):
             self.logger.warning("clash failover helper failed safely; no retry storm")
 
-    def refresh_active_backend(self) -> None:
-        """Follow the existing system-proxy owner, never manage either proxy.
+    def _inspect_system_route(self) -> dict:
+        helper = DEFAULT_HOME / "system_proxy_observer.py"
+        if not helper.is_file():
+            # Source checkout paths remain usable in standalone tests, but the
+            # production installer must deploy the exact same helper.
+            helper = Path(__file__).resolve().parent / "scripts/system_proxy_observer.py"
+        try:
+            result = subprocess.run([sys.executable,str(helper)],capture_output=True,text=True,
+                                    check=False,timeout=5)
+            parsed=json.loads(result.stdout) if result.returncode==0 else {}
+            if parsed.get("source")=="macos_system_proxy":
+                return parsed
+        except (OSError,ValueError,TypeError,subprocess.SubprocessError):
+            pass
+        return {"source":"macos_system_proxy","state":"unavailable","proxy_url":""}
 
-        A failed/stale Clash read cannot trigger Shadowrocket reconnects: once
-        a Clash-owned system proxy is seen, its own listener is preferred and
-        service changes are read-only. No private subscription data is used.
+    def _inspect_mihomo(self) -> dict:
+        helper=DEFAULT_HOME / "clash_observer.py"
+        if not helper.is_file():
+            return {}
+        try:
+            proc=subprocess.run([sys.executable,str(helper)],capture_output=True,
+                                text=True,check=False,timeout=6)
+            observation=json.loads(proc.stdout) if proc.returncode==0 else {}
+            return observation if observation.get("source")=="mihomo_unix_readonly" else {}
+        except (ValueError,OSError,TypeError,subprocess.SubprocessError):
+            return {}
+
+    def refresh_active_backend(self) -> None:
+        """Choose probe transport from the *current* macOS system route.
+
+        A proxy app is NOT detected by its historical port or a subscription's
+        label. Mihomo's API is trusted only when it independently confirms
+        ownership of that macOS system-proxy port. All other providers are
+        treated as generic system proxies, with no node control/recovery.
         """
-        if not self.config.get("proxy_backend_auto_detect_enabled", False):
+        if not self.config.get("proxy_backend_auto_detect_enabled",False):
             return
-        helper = DEFAULT_HOME / "clash_observer.py"
-        observation: dict = {}
-        if helper.is_file():
+        route=self._inspect_system_route()
+        state=route.get("state")
+        selected=str(route.get("proxy_url","")) if state=="explicit" else ""
+        if state=="explicit":
             try:
-                proc = subprocess.run([sys.executable,str(helper)],capture_output=True,
-                                      text=True,check=False,timeout=6)
-                if proc.returncode == 0:
-                    observation = json.loads(proc.stdout)
-            except (ValueError,OSError,subprocess.SubprocessError):
-                pass
-        if observation.get("source") == "mihomo_unix_readonly" and observation.get("active") is True:
-            if self.active_backend != "clash":
-                self.logger.info("proxy control detected=clash; disabling Shadowrocket recovery path")
-            self.active_backend = "clash"
-            self.config["proxy"] = str(observation["proxy_url"])
-            self.clash_observation = observation
-            self.failure_times.clear()
-            self.manual_pause = False
-        elif self.active_backend == "clash":
-            # Switch back only after observing the ORIGINAL Shadowrocket port
-            # as the explicit local system proxy and a live listener. An API
-            # timeout or an unset proxy must never reactivate Shadowrocket.
-            original_port = urlparse(self.shadowrocket_proxy).port
-            if (observation.get("reason") == "proxy_port_mismatch"
-                and observation.get("system_proxy_port") == original_port
-                and proxy_endpoint_available(self.shadowrocket_proxy)):
-                self.logger.info("system proxy owner changed=shadowrocket")
-                self.active_backend = "shadowrocket"
-                self.config["proxy"] = self.shadowrocket_proxy
-                self.clash_observation = {}
-                self.failure_times.clear()
-                self.manual_pause = False
+                shadow_port=(urlparse(selected).hostname,urlparse(selected).port)==(
+                    urlparse(self.shadowrocket_proxy).hostname,urlparse(self.shadowrocket_proxy).port)
+            except ValueError:
+                shadow_port=False
+            if shadow_port:
+                backend="shadowrocket"
+                selection=self.shadowrocket_proxy
+                clash={}
             else:
-                self.clash_observation = {"source":"mihomo_unix_readonly","active":False,
-                                          "reason":observation.get("reason","unavailable")}
+                # Probe the existing official controller in read-only mode; it
+                # must confirm current system endpoint ownership to qualify.
+                clash=self._inspect_mihomo()
+                if (clash.get("active") is True
+                    and clash.get("proxy_url")==selected
+                    and clash.get("api_healthy") is True):
+                    backend="clash"
+                    selection=selected
+                else:
+                    backend="system_proxy"
+                    selection=selected
+                    clash={}
+        elif state=="direct_or_tun":
+            backend="system_route"
+            selection=""
+            clash={}
         else:
-            self.config["proxy"] = self.shadowrocket_proxy
-            self.clash_observation = {}
+            backend="system_unresolved"
+            selection=""
+            clash={}
+        old=(self.active_backend,str(self.config.get("proxy","")))
+        new=(backend,selection)
+        self.system_route_observation=route
+        self.active_backend=backend
+        self.config["proxy"]=selection
+        self.clash_observation=clash
+        if old!=new:
+            self.logger.info("system-proxy route changed backend=%s endpoint=%s",
+                             backend,route.get("endpoint","none"))
+            self.route_generation+=1
+            self.failure_times.clear()
+            self.consecutive_public_failures=0
+            self.manual_pause=False
+            self.current_node=None
+            self.current_node_verified=False
+            self.recovery_state="monitoring"
+            self.recovery_reason=""
+            with self.deep_probe_lock:
+                self.deep_probe_result={}
+                self.deep_probe_last_run=0
+            with self.ai_matrix_lock:
+                self.ai_matrix_checks=[]
+                self.ai_matrix_checked_at=0
+            self.pending_egress=None
+            self.pending_egress_count=0
+            self.confirmed_egress=None
 
     def cycle(self) -> bool:
         if not self.config.get("enabled", True):
@@ -1491,7 +1579,7 @@ class Guardian:
             self.write_status([ProbeResult("proxy_owner",False,0,False,0.0,"unverified")],
                               0,False,proxy_available=False,tunnel_stop_reason="backend_unverified")
             return False
-        observed_node = None if self.active_backend == "clash" else current_shadowrocket_node()
+        observed_node = current_shadowrocket_node() if self.active_backend == "shadowrocket" else None
         self.current_node_verified = observed_node is not None
         if observed_node:
             if self.current_node and observed_node != self.current_node:
@@ -1502,18 +1590,20 @@ class Guardian:
                 self.recovery_state = "validating"
                 self.recovery_reason = "发现节点变化，等待新节点验证"
             self.current_node = observed_node
-        proxy_available = proxy_endpoint_available(self.config["proxy"])
+        proxy_available = (True if self.active_backend == "system_route"
+                           else False if self.active_backend == "system_unresolved"
+                           else proxy_endpoint_available(self.config["proxy"]))
         if not proxy_available:
             self.maybe_begin_deep_probe(False)
             self.maybe_begin_codex_stream()
         tunnel_stop_reason = "none"
-        if not proxy_available and self.active_backend == "clash":
+        if not proxy_available and self.active_backend in ("clash","system_proxy","system_unresolved"):
             # Never launch Shadowrocket to 'repair' an absent Clash listener.
-            self.recovery_state = "clash_unavailable"
-            self.recovery_reason = "Clash 代理接口不可达，未执行其他代理的恢复操作"
+            self.recovery_state = "backend_unverified" if self.active_backend=="system_unresolved" else "proxy_unavailable"
+            self.recovery_reason = "无法确定系统代理出站路径" if self.active_backend=="system_unresolved" else "当前系统代理监听不可达；未启动其他代理"
             self.failure_times.clear()
-            self.write_status([ProbeResult("proxy",False,0,False,0.0,"clash listener unavailable")],
-                              0,False,proxy_available=False,tunnel_stop_reason="clash_unavailable")
+            self.write_status([ProbeResult("proxy",False,0,False,0.0,self.recovery_reason)],
+                              0,False,proxy_available=False,tunnel_stop_reason=self.recovery_state)
             return False
         if not proxy_available:
             tunnel_stop_reason = latest_shadowrocket_stop_reason(
@@ -1545,7 +1635,9 @@ class Guardian:
             healthy = False
             if self.config.get("tunnel_recovery_enabled", True):
                 healthy, results = self.recover_missing_tunnel()
-                proxy_available = proxy_endpoint_available(self.config["proxy"])
+                proxy_available = (True if self.active_backend == "system_route"
+                           else False if self.active_backend == "system_unresolved"
+                           else proxy_endpoint_available(self.config["proxy"]))
             if healthy:
                 self.consecutive_public_failures = 0
                 self.observe_edge_incident(results, True)
@@ -1603,7 +1695,7 @@ class Guardian:
             if self.recovery_state not in ("selector_unavailable","no_candidates",
                                            "candidate_unhealthy"):
                 self.recovery_state = "degraded"
-        switch_required = self.active_backend != "clash" and self.should_switch()
+        switch_required = self.active_backend == "shadowrocket" and self.should_switch()
         self.write_status(
             results,
             len(log_failures),

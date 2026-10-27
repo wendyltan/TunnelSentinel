@@ -95,13 +95,44 @@ private final class DashboardFlippedView: NSView {
 // light/dark appearance. Resolve semantic NSColors while drawing, not when
 // constructing a CALayer's fixed CGColor; otherwise a dark card can retain
 // dark text after attaching to a light system menu (and vice versa).
+// Role-based, appearance-aware surfaces. "controlColor" intentionally is NOT a
+// dark-theme card color: on macOS Dark Aqua it can resolve to light grey.
+private enum SentinelSurface {
+    case hero, tile, event, row, menu
+
+    func fill(isDark: Bool) -> NSColor {
+        func rgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> NSColor {
+            NSColor(srgbRed: r/255, green: g/255, blue: b/255, alpha: 1)
+        }
+        if isDark {
+            switch self {
+            case .hero: return rgb(33, 43, 55)  // restrained blue-black summary
+            case .tile: return rgb(35, 39, 45)  // nearly background, never bright grey
+            case .event: return rgb(36, 40, 47)
+            case .row: return rgb(30, 33, 38)   // dense diagnostic list
+            case .menu: return rgb(32, 37, 43)
+            }
+        }
+        switch self {
+        case .hero: return rgb(243, 248, 253)
+        case .tile: return rgb(250, 251, 253)
+        case .event: return rgb(249, 250, 252)
+        case .row: return rgb(253, 253, 254)
+        case .menu: return rgb(247, 248, 250)
+        }
+    }
+}
+
 private final class AppearanceFillView: NSView {
     private let fillColor: NSColor
     private let cornerRadius: CGFloat
+    private let surface: SentinelSurface?
 
-    init(frame: NSRect, color: NSColor, cornerRadius: CGFloat = 0) {
+    init(frame: NSRect, color: NSColor, cornerRadius: CGFloat = 0,
+         surface: SentinelSurface? = nil) {
         self.fillColor = color
         self.cornerRadius = cornerRadius
+        self.surface = surface
         super.init(frame: frame)
     }
 
@@ -109,13 +140,19 @@ private final class AppearanceFillView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        fillColor.setFill()
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let resolved = surface?.fill(isDark: dark) ?? fillColor
+        resolved.setFill()
         if cornerRadius > 0 {
-            NSBezierPath(roundedRect: bounds, xRadius: cornerRadius, yRadius: cornerRadius).fill()
-            if cornerRadius >= 12 {
-                // Fine semantic outline: separates evidence panels from the window
-                // without introducing colored borders or heavy SaaS-style shadows.
-                NSColor.separatorColor.withAlphaComponent(0.17).setStroke()
+            let path = NSBezierPath(roundedRect: bounds, xRadius: cornerRadius,
+                                    yRadius: cornerRadius)
+            path.fill()
+            if surface != nil || cornerRadius >= 12 {
+                // Thin hierarchy only. Big opaque grey slabs destroy dark contrast.
+                let stroke: NSColor = dark
+                    ? NSColor.white.withAlphaComponent(0.10)
+                    : NSColor.black.withAlphaComponent(0.075)
+                stroke.setStroke()
                 let outline = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
                                            xRadius: cornerRadius, yRadius: cornerRadius)
                 outline.lineWidth = 0.7
@@ -671,7 +708,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                            color: .secondaryLabelColor, frame: NSRect(x: 20, y: 230, width: w - 40, height: 19)))
 
         let nodeBox = AppearanceFillView(frame: NSRect(x: 18, y: 114, width: w - 36, height: 106),
-                                         color: .controlBackgroundColor, cornerRadius: 10)
+                                         color: .clear, cornerRadius: 10, surface: .menu)
         let clashMode = snapshot.routeManagement == "clash_observe_only"
         let backendSource = clashMode ? "GPT 实际请求节点 · Clash 本地 API" :
             snapshot.fresh && snapshot.networkHealthy && snapshot.egressObserved
@@ -1026,8 +1063,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     @objc private func openDashboard() { presentDashboard(tab: 0) }
     @objc private func dashboardTabChanged(_ sender: NSSegmentedControl) {
         dashboardSelection = sender.selectedSegment
-        dashboardScroll?.contentView.scroll(to: NSPoint(x: 0, y: 0))
         refreshDashboard()
+        dashboardScroll?.contentView.scroll(to: .zero)
+        if let scroll = dashboardScroll { scroll.reflectScrolledClipView(scroll.contentView) }
     }
     @objc private func auditShadowrocketRules(_ sender: NSButton) {
         guard snapshot.proxyClient == "shadowrocket", !ruleAuditRunning else { return }
@@ -1066,6 +1104,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         if let existing = dashboardWindow {
             dashboardTabs?.selectedSegment = tab
             refreshDashboard()
+            dashboardScroll?.contentView.scroll(to: .zero)
+            if let scroll = dashboardScroll { scroll.reflectScrolledClipView(scroll.contentView) }
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -1119,7 +1159,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                               tone: NSColor = .secondaryLabelColor,
                               in doc: NSView, y: inout CGFloat) {
         let card = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 64),
-                                      color: .controlBackgroundColor, cornerRadius: 9)
+                                      color: .clear, cornerRadius: 9, surface: .row)
         card.addSubview(label(title, font: .systemFont(ofSize: 12.5, weight: .medium),
                               color: .labelColor, frame: NSRect(x: 14, y: 33, width: 312, height: 19)))
         card.addSubview(label(explanation, font: .systemFont(ofSize: 10.5),
@@ -1146,7 +1186,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                                  isOn: Bool, canEdit: Bool, tag: Int,
                                  in doc: NSView, y: inout CGFloat) {
         let card = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 72),
-                                      color: .controlBackgroundColor, cornerRadius: 9)
+                                      color: .clear, cornerRadius: 9, surface: .row)
         card.addSubview(label(title, font: .systemFont(ofSize: 13, weight: .medium),
                               color: .labelColor, frame: NSRect(x: 15, y: 38, width: 418, height: 20)))
         card.addSubview(label(description, font: .systemFont(ofSize: 10.5),
@@ -1255,7 +1295,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                   "业务可用性以实际客户端记录为准"
         let tone: NSColor = bad ? .systemOrange : network == "ok" ? .systemGreen : .secondaryLabelColor
         let hero = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 92),
-                                      color: .controlColor.withAlphaComponent(0.54), cornerRadius: 14)
+                                      color: .clear, cornerRadius: 14, surface: .hero)
         hero.addSubview(AppearanceFillView(frame: NSRect(x: 17, y: 62, width: 9, height: 9),
                                          color: tone, cornerRadius: 4.5))
         hero.addSubview(label("当前工作流", font: .systemFont(ofSize: 11, weight: .medium),
@@ -1272,7 +1312,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                                      x: CGFloat, y: CGFloat, in doc: NSView) {
         let (state, detail) = axisData(key)
         let card = AppearanceFillView(frame: NSRect(x: x, y: y, width: 267, height: 88),
-                                      color: .controlColor.withAlphaComponent(0.54), cornerRadius: 12)
+                                      color: .clear, cornerRadius: 12, surface: .tile)
         let image = NSImageView(frame: NSRect(x: 16, y: 59, width: 17, height: 18))
         image.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
         image.contentTintColor = .secondaryLabelColor
@@ -1283,7 +1323,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         let observation = evidence["observed_at"] as? Int ?? 0
         let stamp = observation > 0 ? "测于 \(sampleClock(observation))" : "尚无采样"
         card.addSubview(label(stamp, font: .systemFont(ofSize: 10),
-                              color: .tertiaryLabelColor,
+                              color: .secondaryLabelColor,
                               frame: NSRect(x: 172, y: 60, width: 83, height: 17),
                               alignment: .right))
         let dot = AppearanceFillView(frame: NSRect(x: 16, y: 37, width: 7, height: 7),
@@ -1354,7 +1394,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         let expanded = expandedTimelineEvents.contains(id)
         let height: CGFloat = expanded ? 177 : 115
         let card = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: height),
-                                     color: .controlColor.withAlphaComponent(0.54), cornerRadius: 12)
+                                     color: .clear, cornerRadius: 12, surface: .event)
         // A narrow severity rail is more readable than fully tinted cards.
         card.addSubview(AppearanceFillView(frame: NSRect(x: 0, y: 13, width: 3, height: height-26),
                                           color: accent.withAlphaComponent(0.8), cornerRadius: 1.5))
@@ -1369,9 +1409,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                               color: .secondaryLabelColor, frame: NSRect(x: 18, y: height-80, width: 515, height: 19)))
         let button = NSButton(title: expanded ? "收起详情" : "查看详情", target: self,
                               action: #selector(toggleTimelineDetails(_:)))
-        button.bezelStyle = .inline
-        button.font = .systemFont(ofSize: 11.5, weight: .medium)
-        button.contentTintColor = .controlAccentColor
+        button.isBordered = false
+        button.font = .systemFont(ofSize: 11.5, weight: .semibold)
+        button.contentTintColor = .systemBlue
         button.frame = NSRect(x: 11, y: height-111, width: 94, height: 24)
         button.tag = timelineVisibleIDs.count
         timelineVisibleIDs.append(id)
@@ -1419,7 +1459,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             let recent = allEvents.filter { ["codex_remote_session","codex_stream_error","client_log_issue"].contains($0["kind"] as? String ?? "") }
                                   .max { ($0["at"] as? Int ?? 0) < ($1["at"] as? Int ?? 0) }
             let latest = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 94),
-                                            color: .controlColor.withAlphaComponent(0.54), cornerRadius: 12)
+                                            color: .clear, cornerRadius: 12, surface: .event)
             if let item = recent {
                 let isRemote = (item["kind"] as? String) == "codex_remote_session"
                 let ended = (item["reconnected_at"] as? Int ?? 0) > 0
@@ -1442,9 +1482,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             }
             let go = NSButton(title: "打开时间线", target: self,
                               action: #selector(openTimelineFromOverview(_:)))
-            go.bezelStyle = .inline
-            go.font = .systemFont(ofSize: 11.5, weight: .medium)
-            go.contentTintColor = .controlAccentColor
+            go.isBordered = false
+            go.font = .systemFont(ofSize: 11.5, weight: .semibold)
+            go.contentTintColor = .systemBlue
             go.frame = NSRect(x: 13, y: 6, width: 115, height: 24)
             latest.addSubview(go)
             doc.addSubview(latest)
@@ -1540,7 +1580,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             let ongoing = cycles.filter { ($0["reconnected_at"] as? Int ?? 0) == 0 }
             let recovered = cycles.filter { ($0["reconnected_at"] as? Int ?? 0) > 0 }
             let summary = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 85),
-                                             color: .controlColor.withAlphaComponent(0.54), cornerRadius: 12)
+                                             color: .clear, cornerRadius: 12, surface: .event)
             summary.addSubview(label("Codex 远程控制", font: .systemFont(ofSize: 13.5, weight: .semibold),
                                      color: .labelColor, frame: NSRect(x: 17, y: 52, width: 300, height: 21)))
             summary.addSubview(label(ongoing.isEmpty ? "未见进行中的重连事件" : "存在进行中的重连记录",

@@ -112,6 +112,15 @@ private final class AppearanceFillView: NSView {
         fillColor.setFill()
         if cornerRadius > 0 {
             NSBezierPath(roundedRect: bounds, xRadius: cornerRadius, yRadius: cornerRadius).fill()
+            if cornerRadius >= 12 {
+                // Fine semantic outline: separates evidence panels from the window
+                // without introducing colored borders or heavy SaaS-style shadows.
+                NSColor.separatorColor.withAlphaComponent(0.17).setStroke()
+                let outline = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
+                                           xRadius: cornerRadius, yRadius: cornerRadius)
+                outline.lineWidth = 0.7
+                outline.stroke()
+            }
         } else {
             bounds.fill()
         }
@@ -147,6 +156,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     private var dashboardTabs: NSSegmentedControl?
     private var dashboardScroll: NSScrollView?
     private var dashboardSelection = 0
+    private var expandedTimelineEvents = Set<String>()
+    private var timelineVisibleIDs: [String] = []
     private var ruleAuditRunning = false
     private var configUpdateBusy = false
 
@@ -724,7 +735,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return "AI 分流检测 · \(ok)/\(snapshot.aiMatrixSites.count) 可达"
     }
 
-    @objc private func showAIMatrix() { presentDashboard(tab: 1) }
+    @objc private func showAIMatrix() { presentDashboard(tab: 2) }
 
     private func rebuildMenu() {
         guard let statusItem else { return }
@@ -862,7 +873,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         refreshStatus()
     }
 
-    @objc private func openLog() { presentDashboard(tab: 2) }
+    @objc private func openLog() { presentDashboard(tab: 1) }
 
     private func recoveryEnabled() -> Bool {
         let path = base.appendingPathComponent("config.json")
@@ -953,7 +964,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         updateMonitorConfig(["tunnel_recovery_enabled": enabled])
     }
 
-    @objc private func showDeepConnection() { presentDashboard(tab: 1) }
+    @objc private func showDeepConnection() { presentDashboard(tab: 2) }
 
     // The menu stays deliberately short. Native switches remain real controls,
     // not menu-item text pretending to be a toggle.
@@ -1054,11 +1065,11 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         background.blendingMode = .withinWindow
         background.autoresizingMask = [.width, .height]
         root.addSubview(background)
-        background.addSubview(label("监控中心", font: .systemFont(ofSize: 23, weight: .bold),
+        background.addSubview(label("工作流监控", font: .systemFont(ofSize: 23, weight: .semibold),
                                     color: .labelColor, frame: NSRect(x: 28, y: 578, width: 330, height: 31)))
-        background.addSubview(label("看得懂的状态 · 真实来源 · 不干预代理", font: .systemFont(ofSize: 11.5),
+        background.addSubview(label("ChatGPT · Codex · Computer Use", font: .systemFont(ofSize: 11.5),
                                     color: .secondaryLabelColor, frame: NSRect(x: 28, y: 556, width: 440, height: 18)))
-        let tabs = NSSegmentedControl(labels: ["概览", "连接诊断", "故障时间线", "设置"],
+        let tabs = NSSegmentedControl(labels: ["总览", "时间线", "诊断", "节点", "设置"],
                                       trackingMode: .selectOne,
                                       target: self, action: #selector(dashboardTabChanged(_:)))
         tabs.frame = NSRect(x: 27, y: 510, width: 566, height: 32)
@@ -1175,6 +1186,188 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                      value: display.0, tone: display.1, in: doc, y: &y)
     }
 
+
+    private func dashboardTwoLine(_ value: String, frame: NSRect) -> NSTextField {
+        let field = NSTextField(wrappingLabelWithString: value)
+        field.font = .systemFont(ofSize: 11)
+        field.textColor = .secondaryLabelColor
+        field.maximumNumberOfLines = 2
+        field.lineBreakMode = .byTruncatingTail
+        field.frame = frame
+        return field
+    }
+
+    private func statusColor(_ state: String) -> NSColor {
+        switch state {
+        case "ok": return .systemGreen
+        case "partial": return .systemBlue
+        case "failed": return .systemRed
+        case "degraded": return .systemOrange
+        default: return .secondaryLabelColor
+        }
+    }
+
+    private func statusText(_ state: String) -> String {
+        switch state {
+        case "ok": return "基础正常"
+        case "partial": return "部分已验证"
+        case "failed": return "连接失败"
+        case "degraded": return "需要关注"
+        default: return "尚未验证"
+        }
+    }
+
+    private func axisData(_ key: String) -> (String, String) {
+        let axis = snapshot.workflowHealth[key] as? [String:Any] ?? [:]
+        let state = snapshot.fresh ? (axis["state"] as? String ?? "unknown") : "unknown"
+        let detail = snapshot.fresh
+            ? (axis["label"] as? String ?? "暂无新鲜业务证据")
+            : "上次检测已过期"
+        return (state, detail)
+    }
+
+    private func overviewHero(in doc: NSView, y: inout CGFloat) {
+        let network = axisData("network").0
+        let codex = axisData("codex").0
+        let browser = axisData("computer_use").0
+        let bad = [network,codex,browser].contains("failed") ||
+                  [network,codex,browser].contains("degraded")
+        let title = bad ? "部分连接需要关注" :
+                    network == "ok" ? "基础网络已连接" : "正在确认连接状态"
+        let sub = bad ? "检测到异常，请在时间线查看证据" :
+                  "业务可用性以实际客户端记录为准"
+        let tone: NSColor = bad ? .systemOrange : network == "ok" ? .systemGreen : .secondaryLabelColor
+        let hero = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 92),
+                                      color: .controlColor.withAlphaComponent(0.54), cornerRadius: 14)
+        hero.addSubview(AppearanceFillView(frame: NSRect(x: 17, y: 62, width: 9, height: 9),
+                                         color: tone, cornerRadius: 4.5))
+        hero.addSubview(label("当前工作流", font: .systemFont(ofSize: 11, weight: .medium),
+                              color: .secondaryLabelColor, frame: NSRect(x: 34, y: 57, width: 140, height: 19)))
+        hero.addSubview(label(title, font: .systemFont(ofSize: 22, weight: .semibold),
+                              color: .labelColor, frame: NSRect(x: 18, y: 25, width: 488, height: 33)))
+        hero.addSubview(label(sub, font: .systemFont(ofSize: 11.5),
+                              color: .secondaryLabelColor, frame: NSRect(x: 19, y: 9, width: 510, height: 17)))
+        doc.addSubview(hero)
+        y += 105
+    }
+
+    private func dashboardHealthTile(_ key: String, title: String, symbol: String,
+                                     x: CGFloat, y: CGFloat, in doc: NSView) {
+        let (state, detail) = axisData(key)
+        let card = AppearanceFillView(frame: NSRect(x: x, y: y, width: 267, height: 88),
+                                      color: .controlColor.withAlphaComponent(0.54), cornerRadius: 12)
+        let image = NSImageView(frame: NSRect(x: 16, y: 59, width: 17, height: 18))
+        image.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+        image.contentTintColor = .secondaryLabelColor
+        card.addSubview(image)
+        card.addSubview(label(title, font: .systemFont(ofSize: 12.5, weight: .medium),
+                              color: .labelColor, frame: NSRect(x: 42, y: 58, width: 200, height: 20)))
+        let dot = AppearanceFillView(frame: NSRect(x: 16, y: 37, width: 7, height: 7),
+                                     color: statusColor(state), cornerRadius: 3.5)
+        card.addSubview(dot)
+        card.addSubview(label(statusText(state), font: .systemFont(ofSize: 12, weight: .semibold),
+                              color: statusColor(state), frame: NSRect(x: 29, y: 32, width: 222, height: 21)))
+        card.addSubview(dashboardTwoLine(detail, frame: NSRect(x: 16, y: 6, width: 237, height: 26)))
+        doc.addSubview(card)
+    }
+
+    @objc private func openTimelineFromOverview(_ sender: NSButton) {
+        dashboardSelection = 1
+        dashboardTabs?.selectedSegment = 1
+        dashboardScroll?.contentView.scroll(to: .zero)
+        refreshDashboard()
+    }
+
+    @objc private func toggleTimelineDetails(_ sender: NSButton) {
+        guard sender.tag >= 0 && sender.tag < timelineVisibleIDs.count else { return }
+        let id = timelineVisibleIDs[sender.tag]
+        if expandedTimelineEvents.contains(id) {
+            expandedTimelineEvents.remove(id)
+        } else {
+            expandedTimelineEvents.insert(id)
+        }
+        refreshDashboard()
+    }
+
+    private func readableEventSource(_ source: String) -> String {
+        switch source {
+        case "codex_remote_control_read_only_sqlite": return "Codex 真实连接日志"
+        case "codex_read_only_sqlite", "codex_client_read_only_sqlite": return "Codex 客户端日志"
+        case "client_log_classifier": return "客户端异常日志"
+        case "macos_system_proxy": return "macOS 系统代理"
+        case "public_trace_two_sample_confirmation": return "公网出口检测"
+        default: return "TunnelSentinel 监控记录"
+        }
+    }
+
+    private func eventID(_ event: [String:Any]) -> String {
+        String(event["kind"] as? String ?? "event") + ":" + String(event["at"] as? Int ?? 0)
+    }
+
+    private func timelineEventCard(_ event: [String:Any],
+                                   in doc: NSView, y: inout CGFloat) {
+        let kind = event["kind"] as? String ?? ""
+        let remote = kind == "codex_remote_session"
+        let recovered = (event["reconnected_at"] as? Int ?? 0) > 0
+        let warning = (event["level"] as? String) == "warning"
+        let accent: NSColor = remote ? (recovered ? .systemGreen : .systemOrange) :
+                               warning ? .systemOrange : .secondaryLabelColor
+        let started = event["at"] as? Int ?? 0
+        let time = Date(timeIntervalSince1970: TimeInterval(started))
+        let stamp = DateFormatter.localizedString(from: time, dateStyle: .none, timeStyle: .short)
+        let titleText = remote ? "Codex 远程控制" :
+                       (event["title"] as? String ?? "连接状态变化")
+        let duration = event["duration_seconds"] as? Int ?? 0
+        let attempts = event["retries"] as? Int ?? 0
+        let failures = event["connect_failures"] as? Int ?? 0
+        let value = remote ? (recovered ? "\(duration) 秒后恢复" : "仍在重新连接") :
+                    warning ? "需要关注" : "已记录"
+        let sub = remote ? (recovered ?
+                  "\(stamp) 断开，重试最多 \(max(1,attempts)) 次" :
+                  "\(stamp) 检测到断开，尚未看到恢复记录") :
+                  "\(stamp) · \(readableEventSource(event["source"] as? String ?? ""))"
+        let id = eventID(event)
+        let expanded = expandedTimelineEvents.contains(id)
+        let height: CGFloat = expanded ? 177 : 115
+        let card = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: height),
+                                     color: .controlColor.withAlphaComponent(0.54), cornerRadius: 12)
+        // A narrow severity rail is more readable than fully tinted cards.
+        card.addSubview(AppearanceFillView(frame: NSRect(x: 0, y: 13, width: 3, height: height-26),
+                                          color: accent.withAlphaComponent(0.8), cornerRadius: 1.5))
+        card.addSubview(label(titleText, font: .systemFont(ofSize: 13.5, weight: .semibold),
+                              color: .labelColor, frame: NSRect(x: 17, y: height-32, width: 330, height: 21)))
+        card.addSubview(label(recovered ? "已恢复" : warning ? "待核实" : "观察记录",
+                              font: .systemFont(ofSize: 11, weight: .medium), color: accent,
+                              frame: NSRect(x: 423, y: height-30, width: 110, height: 20), alignment: .right))
+        card.addSubview(label(value, font: .systemFont(ofSize: 17, weight: .semibold),
+                              color: .labelColor, frame: NSRect(x: 18, y: height-60, width: 456, height: 24)))
+        card.addSubview(label(sub, font: .systemFont(ofSize: 11),
+                              color: .secondaryLabelColor, frame: NSRect(x: 18, y: height-80, width: 515, height: 19)))
+        let button = NSButton(title: expanded ? "收起详情" : "查看详情", target: self,
+                              action: #selector(toggleTimelineDetails(_:)))
+        button.bezelStyle = .inline
+        button.font = .systemFont(ofSize: 11.5, weight: .medium)
+        button.contentTintColor = .controlAccentColor
+        button.frame = NSRect(x: 11, y: height-111, width: 94, height: 24)
+        button.tag = timelineVisibleIDs.count
+        timelineVisibleIDs.append(id)
+        card.addSubview(button)
+        if expanded {
+            let line = AppearanceFillView(frame: NSRect(x: 18, y: 57, width: 514, height: 1),
+                                          color: .separatorColor.withAlphaComponent(0.45))
+            card.addSubview(line)
+            let extra = remote ?
+                "尝试 \(max(1,attempts)) 次 · 握手失败 \(failures) 次 · 仅确认连接恢复" :
+                "来源：\(readableEventSource(event["source"] as? String ?? ""))"
+            card.addSubview(dashboardTwoLine(extra, frame: NSRect(x: 19, y: 28, width: 511, height: 28)))
+            card.addSubview(label("记录来源已脱敏；没有证据证明节点变化导致此次故障。",
+                                  font: .systemFont(ofSize: 10), color: .tertiaryLabelColor,
+                                  frame: NSRect(x: 19, y: 9, width: 510, height: 17)))
+        }
+        doc.addSubview(card)
+        y += height + 10
+    }
+
     private func refreshDashboard() {
         guard let scroll = dashboardScroll, dashboardWindow != nil else { return }
         let previousY = scroll.contentView.bounds.origin.y
@@ -1184,23 +1377,59 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         let tests = diagnostic["targets"] as? [[String:Any]] ?? []
         switch dashboardSelection {
         case 0:
-            dashboardHeading("工作流健康度", in: doc, y: &y)
-            workflowCard("network", title: "系统代理与公共网络", in: doc, y: &y)
-            workflowCard("chatgpt", title: "ChatGPT", in: doc, y: &y)
-            workflowCard("codex", title: "Codex", in: doc, y: &y)
-            workflowCard("computer_use", title: "Computer Use", in: doc, y: &y)
-            dashboardNote("蓝色“部分证据”不表示业务已经完成；灰色“尚未验证”表示没有当前有效的真实执行记录。不会自动打开网页或消耗模型额度。", in: doc, y: &y)
-            dashboardHeading("监测运行方式", in: doc, y: &y)
-            dashboardRow("系统代理", explanation: "取自 macOS 当前监控路径，不代表机场节点",
-                         value: snapshot.proxyClient == "clash" ? "Clash Verge" : "Shadowrocket",
-                         in: doc, y: &y)
-            dashboardRow("自动节点控制", explanation: "健康检测不会修改你使用的代理节点",
-                         value: snapshot.automaticControlEnabled ? "已授权" : "仅监测",
-                         tone: .systemBlue, in: doc, y: &y)
-            dashboardRow("公共出口", explanation: "只是出口地区，不代表 GPT 实际节点",
-                         value: snapshot.egressObserved ? shortEgress : "当前无新鲜数据",
-                         in: doc, y: &y)
-        case 1:
+            overviewHero(in: doc, y: &y)
+            dashboardHeading("服务状态", in: doc, y: &y)
+            let firstRow = y
+            dashboardHealthTile("network", title: "基础网络", symbol: "network",
+                                x: 3, y: firstRow, in: doc)
+            dashboardHealthTile("chatgpt", title: "ChatGPT", symbol: "bubble.left.and.bubble.right",
+                                x: 286, y: firstRow, in: doc)
+            y += 99
+            dashboardHealthTile("codex", title: "Codex", symbol: "terminal",
+                                x: 3, y: y, in: doc)
+            dashboardHealthTile("computer_use", title: "Computer Use", symbol: "macwindow",
+                                x: 286, y: y, in: doc)
+            y += 104
+            dashboardHeading("最近一次连接事件", in: doc, y: &y)
+            let allEvents = snapshot.workflowTimeline["events"] as? [[String:Any]] ?? []
+            let recent = allEvents.filter { ["codex_remote_session","codex_stream_error","client_log_issue"].contains($0["kind"] as? String ?? "") }
+                                  .max { ($0["at"] as? Int ?? 0) < ($1["at"] as? Int ?? 0) }
+            let latest = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 94),
+                                            color: .controlColor.withAlphaComponent(0.54), cornerRadius: 12)
+            if let item = recent {
+                let isRemote = (item["kind"] as? String) == "codex_remote_session"
+                let ended = (item["reconnected_at"] as? Int ?? 0) > 0
+                let labelText = isRemote ? (ended ? "Codex 已重新连接" : "Codex 连接中断") :
+                                (item["title"] as? String ?? "客户端连接异常")
+                latest.addSubview(label(labelText, font: .systemFont(ofSize: 14, weight: .medium),
+                                        color: .labelColor, frame: NSRect(x: 17, y: 56, width: 435, height: 25)))
+                let summary = isRemote && ended
+                    ? "持续 \(item["duration_seconds"] as? Int ?? 0) 秒 · 通过 Codex 客户端日志确认"
+                    : "有新的客户端状态记录，详情在时间线"
+                latest.addSubview(label(summary, font: .systemFont(ofSize: 11.5),
+                                        color: .secondaryLabelColor,
+                                        frame: NSRect(x: 18, y: 33, width: 504, height: 20)))
+            } else {
+                latest.addSubview(label("暂无可确认的连接故障", font: .systemFont(ofSize: 14, weight: .medium),
+                                        color: .labelColor, frame: NSRect(x: 17, y: 54, width: 440, height: 25)))
+                latest.addSubview(label("没有异常日志不等于所有业务都已验证。",
+                                        font: .systemFont(ofSize: 11), color: .secondaryLabelColor,
+                                        frame: NSRect(x: 18, y: 30, width: 502, height: 19)))
+            }
+            let go = NSButton(title: "打开时间线", target: self,
+                              action: #selector(openTimelineFromOverview(_:)))
+            go.bezelStyle = .inline
+            go.font = .systemFont(ofSize: 11.5, weight: .medium)
+            go.contentTintColor = .controlAccentColor
+            go.frame = NSRect(x: 13, y: 6, width: 115, height: 24)
+            latest.addSubview(go)
+            doc.addSubview(latest)
+            y += 108
+            doc.addSubview(label("只读监测 · 不会自动更换节点 · 缺少实际验证时显示「尚未验证」",
+                                 font: .systemFont(ofSize: 10.5), color: .tertiaryLabelColor,
+                                 frame: NSRect(x: 9, y: y, width: 535, height: 18)))
+            y += 25
+        case 2:
             dashboardHeading("ChatGPT · OpenAI", in: doc, y: &y)
             if tests.isEmpty {
                 dashboardNote("分层探测正在等待首次结果。后台每约 5 分钟更新一次，不会登录账号或干预代理。", in: doc, y: &y)
@@ -1264,43 +1493,59 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                              tone: site.status == "reachable" ? .systemGreen : .secondaryLabelColor,
                              in: doc, y: &y)
             }
-        case 2:
-            dashboardHeading("故障时间线 · 最近 7 天", in: doc, y: &y)
-            let timeline = snapshot.workflowTimeline
-            let events = timeline["events"] as? [[String:Any]] ?? []
-            let incident = timeline["active_incident"] as? [String:Any]
-            if let incident {
-                let start = incident["started_at"] as? Int ?? 0
-                let when = DateFormatter.localizedString(from: Date(timeIntervalSince1970: TimeInterval(start)),
-                                                         dateStyle: .none, timeStyle: .short)
-                dashboardRow("当前有待核实的异常", explanation: "首次观察 \(when) · 可查看下方证据",
-                             value: "事件进行中", tone: .systemOrange, in: doc, y: &y)
+        case 1:
+            dashboardHeading("连接故障与恢复", in: doc, y: &y)
+            dashboardNote("每次断线只显示一条记录。点开事件可查看尝试次数和日志依据。", in: doc, y: &y)
+            let events = snapshot.workflowTimeline["events"] as? [[String:Any]] ?? []
+            let relevant = events.filter {
+                ["codex_remote_session","codex_stream_error","client_log_issue",
+                 "proxy_owner_changed","public_egress_changed"].contains($0["kind"] as? String ?? "")
+            }.sorted { ($0["at"] as? Int ?? 0) > ($1["at"] as? Int ?? 0) }
+            let cycles = relevant.filter { $0["kind"] as? String == "codex_remote_session" }
+            let ongoing = cycles.filter { ($0["reconnected_at"] as? Int ?? 0) == 0 }
+            let recovered = cycles.filter { ($0["reconnected_at"] as? Int ?? 0) > 0 }
+            let summary = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 85),
+                                             color: .controlColor.withAlphaComponent(0.54), cornerRadius: 12)
+            summary.addSubview(label("Codex 远程控制", font: .systemFont(ofSize: 13.5, weight: .semibold),
+                                     color: .labelColor, frame: NSRect(x: 17, y: 52, width: 300, height: 21)))
+            summary.addSubview(label(ongoing.isEmpty ? "未见进行中的重连事件" : "存在进行中的重连记录",
+                                     font: .systemFont(ofSize: 11.5),
+                                     color: ongoing.isEmpty ? .secondaryLabelColor : .systemOrange,
+                                     frame: NSRect(x: 17, y: 29, width: 395, height: 19)))
+            summary.addSubview(label("恢复 \(recovered.count) 次",
+                                     font: .systemFont(ofSize: 12, weight: .semibold),
+                                     color: recovered.isEmpty ? .secondaryLabelColor : .systemGreen,
+                                     frame: NSRect(x: 407, y: 50, width: 122, height: 21),
+                                     alignment: .right))
+            summary.addSubview(label("仅统计本机已观测到的周期", font: .systemFont(ofSize: 10),
+                                     color: .tertiaryLabelColor,
+                                     frame: NSRect(x: 17, y: 10, width: 479, height: 16)))
+            doc.addSubview(summary)
+            y += 103
+            timelineVisibleIDs.removeAll()
+            let limited = Array(relevant.prefix(16))
+            if limited.isEmpty {
+                dashboardNote("目前没有需要展示的连接中断；正常使用即可，监控会自动记录后续事件。", in: doc, y: &y)
+            } else {
+                var previousDay = ""
+                for event in limited {
+                    let at = event["at"] as? Int ?? 0
+                    let date = Date(timeIntervalSince1970: TimeInterval(at))
+                    let day = Calendar.current.isDateInToday(date) ? "今天" :
+                              Calendar.current.isDateInYesterday(date) ? "昨天" :
+                              DateFormatter.localizedString(from: date, dateStyle: .medium, timeStyle: .none)
+                    if day != previousDay {
+                        doc.addSubview(label(day, font: .systemFont(ofSize: 12, weight: .semibold),
+                                             color: .secondaryLabelColor,
+                                             frame: NSRect(x: 8, y: y, width: 500, height: 21)))
+                        y += 28
+                        previousDay = day
+                    }
+                    timelineEventCard(event, in: doc, y: &y)
+                }
             }
-            if events.isEmpty { dashboardNote("尚无被记录的故障变化。这不代表 ChatGPT、Codex 或 Computer Use 的业务验收已经通过。", in: doc, y: &y) }
-            for event in events.suffix(12).reversed() {
-                let seconds = event["at"] as? Int ?? 0
-                let when = DateFormatter.localizedString(from: Date(timeIntervalSince1970: TimeInterval(seconds)),
-                                                         dateStyle: .short, timeStyle: .short)
-                let title = event["title"] as? String ?? "状态变化"
-                let level = event["level"] as? String ?? "info"
-                let source = event["source"] as? String ?? "unknown"
-                let names = [
-                    "anonymous_public_probe":"ChatGPT 公开入口探测",
-                    "codex_client_read_only_sqlite":"Codex 本机请求日志",
-                    "codex_read_only_sqlite":"Codex 本机连接日志",
-                    "client_log_classifier":"客户端异常日志",
-                    "macos_system_proxy":"macOS 系统代理",
-                    "guardian_public_edge_and_local_proxy":"代理与公共入口",
-                    "public_trace_two_sample_confirmation":"公共出口二次确认",
-                    "tunnelsentinel_workflow_evidence_v1":"TunnelSentinel 观察记录"
-                ]
-                let origin = names[source] ?? "本机监控状态"
-                dashboardRow(title, explanation: "\(when) · 证据：\(origin)",
-                             value: level == "warning" ? "需关注" : "已记录",
-                             tone: level == "warning" ? .systemOrange : .secondaryLabelColor,
-                             in: doc, y: &y)
-            }
-            dashboardNote("事件在本机保留最多 7 天，只记录来源、状态和时间；不会保存聊天内容、请求头或账户资料。", in: doc, y: &y)
+            dashboardNote("连接恢复不等于模型任务已完成；无法从时间接近推定节点变化导致断线。", in: doc, y: &y)
+        case 3:
             dashboardHeading("节点识别 · 按证据显示", in: doc, y: &y)
             if snapshot.routeManagement == "clash_observe_only" {
                 dashboardRow("Clash 策略组选中", explanation: "Mihomo 官方 API 当前组内选择",

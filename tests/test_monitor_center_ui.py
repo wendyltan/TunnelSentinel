@@ -20,7 +20,7 @@ class MonitorCenterTests(unittest.TestCase):
   self.assertIn('snapshot.clashGroup == "TunnelSentinel-OpenAI"',s)
   self.assertIn('toggleTunnelRecovery()',s)
  def test_dashboard_is_distinct_and_confidence_labelled(self):
-  self.assertIn('NSSegmentedControl(labels: ["概览", "连接诊断", "故障时间线", "设置"]',s)
+  self.assertIn('NSSegmentedControl(labels: ["总览", "时间线", "诊断", "节点", "设置"]',s)
   self.assertIn('DashboardFlippedView(',s)
   self.assertIn('没有可确认请求',s.replace('未见可确认请求','没有可确认请求'))
   self.assertIn('Shadowrocket 全局选择',s)

@@ -30,7 +30,7 @@ from urllib.parse import urlencode, urlparse
 
 
 APP_NAME = "OpenAILinkGuardian"
-VERSION = "1.5.5"
+VERSION = "1.5.6"
 DEFAULT_HOME = Path.home() / "Library" / "Application Support" / APP_NAME
 DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 DEFAULT_STATUS = DEFAULT_HOME / "status.json"
@@ -657,6 +657,10 @@ class Guardian:
         self.codex_stream_last_run = 0.0
         self.codex_stream_running = False
         self.codex_stream_result: dict = {}
+        self.computer_use_lock = threading.Lock()
+        self.computer_use_running = False
+        self.computer_use_last_run = 0.0
+        self.computer_use_result: dict = {}
         self.deep_probe_lock = threading.Lock()
         self.deep_probe_running = False
         self.deep_probe_last_run = 0.0
@@ -738,6 +742,34 @@ class Guardian:
             self.codex_stream_last_run=now
         threading.Thread(target=self._codex_stream_worker,daemon=True,
                          name="CodexStreamHealthObserver").start()
+
+    def _computer_use_worker(self) -> None:
+        helper = DEFAULT_HOME / "computer_use_observer.py"
+        result = {"source":"local_codex_computer_use_observer_v1","state":"unavailable"}
+        try:
+            proc = subprocess.run([sys.executable, str(helper)],
+                                  capture_output=True, text=True, check=False, timeout=4.5)
+            if proc.returncode == 0:
+                parsed = json.loads(proc.stdout)
+                if parsed.get("source") == "local_codex_computer_use_observer_v1":
+                    result = parsed
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            pass
+        finally:
+            with self.computer_use_lock:
+                self.computer_use_result = result
+                self.computer_use_running = False
+
+    def maybe_begin_computer_use(self) -> None:
+        # Independent of proxy ownership and network health. Read-only metadata.
+        now = time.monotonic()
+        with self.computer_use_lock:
+            if self.computer_use_running or now - self.computer_use_last_run < 60:
+                return
+            self.computer_use_running = True
+            self.computer_use_last_run = now
+        threading.Thread(target=self._computer_use_worker, daemon=True,
+                         name="ComputerUseReadOnlyObserver").start()
 
     def _deep_probe_worker(self, generation: int, proxy: str) -> None:
         helper=DEFAULT_HOME / "gpt_deep_probe.py"
@@ -1221,6 +1253,8 @@ class Guardian:
         with self.deep_probe_lock:
             deep=dict(self.deep_probe_result)
             deep_running=self.deep_probe_running
+        with self.computer_use_lock:
+            computer_use=dict(self.computer_use_result)
         deep_when=int(deep.get("checked_at",0))
         if deep_when<=0 or not (0<=time.time()-deep_when<=max(600,2*int(self.config.get("deep_connection_probe_interval_seconds",300)))):
             deep={"source":"bounded_public_tls_probes","state":"pending_or_stale",
@@ -1229,7 +1263,8 @@ class Guardian:
         now=time.time()
         workflow_axes=evaluate_workflow_health(now=now,healthy=healthy,
                          proxy_available=proxy_available,deep=deep,stream=stream_info,
-                         issues=issues,network_failure_streak=network_failure_streak)
+                         issues=issues,computer_use=computer_use,
+                         network_failure_streak=network_failure_streak)
         if self.active_backend == "system_unresolved":
             # PAC/auto-discovery cannot be faithfully resolved by reading static
             # scutil values. Unknown != actual failed user connections.
@@ -1242,7 +1277,8 @@ class Guardian:
             timeline=update_workflow_timeline(self.status_path.parent / "workflow_timeline.json",
                          now=now, axes=workflow_axes,
                          proxy_client=self.active_backend,
-                         stream=stream_info,issues=issues,egress_history=self.egress_changed_at)
+                         stream=stream_info,issues=issues,egress_history=self.egress_changed_at,
+                         computer_use=computer_use)
         except (OSError,ValueError,TypeError):
             self.logger.warning("workflow timeline unavailable; monitoring continues")
             timeline={"source":"tunnelsentinel_workflow_evidence_v1","events":[],
@@ -1289,6 +1325,7 @@ class Guardian:
         } if clash_active else {}
         payload = {
             "workflow_health": workflow_axes,
+            "computer_use_observation": computer_use,
             "workflow_timeline": timeline,
             "deep_connection_diagnostics": deep,
             "automatic_control_enabled": bool(self.config.get("automatic_control_enabled",False)),
@@ -1571,6 +1608,7 @@ class Guardian:
             self.logger.info("guardian disabled by configuration")
             return True
         self.refresh_active_backend()
+        self.maybe_begin_computer_use()
         # Clash still listening is not proof it owns the current system path.
         # Fail closed if ownership can no longer be established from scutil.
         if self.active_backend == "clash" and self.clash_observation.get("active") is not True:

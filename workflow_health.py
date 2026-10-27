@@ -23,7 +23,8 @@ def _axis(state, label, source, observed=0, detail=''):
             'observed_at':int(observed or 0),'detail':detail}
 
 
-def evaluate(*, now, healthy, proxy_available, deep, stream, issues, network_failure_streak=2):
+def evaluate(*, now, healthy, proxy_available, deep, stream, issues,
+             computer_use=None, network_failure_streak=2):
     """Four independent axes; unknown means no business-level proof, not green."""
     # Raw measurements are retained separately in status.probes.
     # One timeout while the proxy listener still responds is only an
@@ -92,11 +93,36 @@ def evaluate(*, now, healthy, proxy_available, deep, stream, issues, network_fai
     browser_events=[x for x in issues if isinstance(x,dict)
                     and x.get('category')=='browser_backend'
                     and 0<=now-float(x.get('last_seen',0))<=300]
+    observation=computer_use if isinstance(computer_use,dict) else {}
+    source_ok=observation.get('source')=='local_codex_computer_use_observer_v1'
+    checked=int(observation.get('checked_at') or 0) if source_ok else 0
+    fresh=bool(checked and 0<=now-checked<=180)
+    backend=observation.get('backend',{}) if fresh else {}
+    execution=observation.get('execution',{}) if fresh else {}
+    completed=int(execution.get('last_completed_at') or 0)
+    failed=int(execution.get('last_failed_at') or 0)
     if browser_events:
         last=max(int(x.get('last_seen',0)) for x in browser_events)
         browser=_axis('degraded','浏览器控制后端有错误日志','chatgpt_codex_client_log',last)
+    elif execution.get('state')=='ok' and failed>=completed and failed and 0<=now-failed<=300:
+        browser=_axis('degraded','本机 Computer Use 工具调用失败',
+                      'local_codex_cua_tool_status',failed,
+                      '仅证明本次工具调用失败；不能据此认定代理故障')
+    elif execution.get('state')=='ok' and completed and 0<=now-completed<=900:
+        browser=_axis('partial','本机工具调用已完成 · 任务结果未验',
+                      'local_codex_cua_tool_status',completed,
+                      '调用完成不等于网页或桌面操作达到预期')
+    elif backend.get('state')=='running':
+        ready=int(backend.get('startup_ready_at') or 0)
+        browser=_axis('partial',
+                      ('控制服务运行 · 已记录后端就绪' if ready and 0<=now-ready<=43200
+                       else '控制服务进程运行 · 操作未验'),
+                      'local_computer_use_process_and_startup_log',int(now),
+                      ('本机有历史工具调用，当前窗口无新结果' if completed or failed
+                       else '本机无近期实际执行回执；云端执行不在本机日志内'))
     else:
-        browser=_axis('unknown','尚无真实 Computer Use 操作验收记录','none',0)
+        browser=_axis('unknown','近期没有可核实的本机 Computer Use 记录',
+                      'none',0,'云端操作或其他执行通道可能不在本机日志内')
     return {'source':SOURCE,'checked_at':int(now),'network':network,
             'chatgpt':chatgpt,'codex':codex,'computer_use':browser,
             'note':'partial means transport/client-metadata evidence; not authenticated task success'}
@@ -125,7 +151,8 @@ def _save(path,obj):
         except FileNotFoundError:pass
 
 
-def update_timeline(path, *, now, axes, proxy_client, stream, issues, egress_history):
+def update_timeline(path, *, now, axes, proxy_client, stream, issues, egress_history,
+                    computer_use=None):
     """Deduplicate observations across cycles/restarts; no fabricated incidents."""
     data=_read(path)
     events=[x for x in data.get('events',[]) if isinstance(x,dict)
@@ -150,6 +177,18 @@ def update_timeline(path, *, now, axes, proxy_client, stream, issues, egress_his
                 axis['label'],evidence=axis['source'])
         states[name]=state
     merge_remote_sessions(events,(stream or {}).get('remote_control'),now)
+    cua=computer_use if isinstance(computer_use,dict) else {}
+    if cua.get('source')=='local_codex_computer_use_observer_v1' and 0 <= now-int(cua.get('checked_at') or 0) <= 180:
+        execution=cua.get('execution') or {}
+        last=int(execution.get('latest_at') or 0)
+        status=execution.get('latest_status')
+        if status in ('completed','failed') and last and 0<=now-last<=600 and last>int(marks.get('cua_invocation',0)):
+            add('computer_use_invocation','warning' if status=='failed' else 'info',
+                'computer_use',
+                '本机 Computer Use 工具调用失败' if status=='failed'
+                else '本机 Computer Use 工具调用结束（目标结果未验）',
+                last,'local_codex_cua_tool_status')
+            marks['cua_invocation']=last
     last_error=int((stream or {}).get('last_at') or 0)
     count=sum(int(((stream or {}).get('recent_counts') or {}).get(k,0)) for k in
               ('broken_pipe','websocket_handshake','connection_reset'))

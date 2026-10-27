@@ -38,6 +38,7 @@ private struct Snapshot {
     var deepConnection: [String: Any] = [:]
     var codexStream: [String: Any] = [:]
     var workflowHealth: [String: Any] = [:]
+    var computerUseObservation: [String: Any] = [:]
     var workflowTimeline: [String: Any] = [:]
     var clashMode = ""
     var clashGroup = ""
@@ -332,6 +333,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         next.deepConnection = values["deep_connection_diagnostics"] as? [String:Any] ?? [:]
         next.codexStream = values["codex_stream_diagnostics"] as? [String:Any] ?? [:]
         next.workflowHealth = values["workflow_health"] as? [String:Any] ?? [:]
+        next.computerUseObservation = values["computer_use_observation"] as? [String:Any] ?? [:]
         next.workflowTimeline = values["workflow_timeline"] as? [String:Any] ?? [:]
         next.clashAutoSwitchMode = values["clash_auto_switch_mode"] as? String ?? "simulation_only"
         if let failover = values["clash_failover_status"] as? [String:Any] {
@@ -825,7 +827,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             snapshot.proxyClient,snapshot.clashMode,snapshot.clashGroup,snapshot.clashParent,
             String(snapshot.automaticControlEnabled),String(snapshot.tunnelRecoveryEnabled),
             String(describing:snapshot.deepConnection),String(describing:snapshot.codexStream),
-            String(describing:snapshot.workflowHealth),String(describing:snapshot.workflowTimeline),
+            String(describing:snapshot.workflowHealth),String(describing:snapshot.computerUseObservation),
+            String(describing:snapshot.workflowTimeline),
             snapshot.clashAutoSwitchMode,snapshot.clashFailoverState,
             snapshot.clashFailoverFrom,snapshot.clashFailoverTo,String(snapshot.clashFailoverActions),
             snapshot.clashSelectedNode,String(snapshot.clashActiveConnections),
@@ -1323,12 +1326,26 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         let browser = axisData("computer_use").0
         let bad = [network,codex,browser].contains("failed") ||
                   [network,codex,browser].contains("degraded")
-        let title = bad ? "部分连接需要关注" :
-                    network == "ok" ? "基础网络已连接" : "连接状态待确认"
-        let subtitle = bad ? "最近的异常和恢复记录可在时间线查看" :
-                       "已登录业务状态以真实客户端记录为准"
+        let chatgpt = axisData("chatgpt").0
+        let title: String
+        if browser == "failed" || browser == "degraded" {
+            title = "Computer Use 需要关注"
+        } else if codex == "failed" || codex == "degraded" {
+            title = "Codex 连接需要关注"
+        } else if network == "failed" || network == "degraded" {
+            title = "基础网络需要关注"
+        } else if chatgpt == "degraded" || chatgpt == "failed" {
+            title = "ChatGPT 入口需要关注"
+        } else if browser == "partial" {
+            title = "Computer Use 服务在线 · 任务未验"
+        } else if network == "ok" {
+            title = "网络可达 · 业务结果待核实"
+        } else {
+            title = "关键工作流状态待确认"
+        }
+        let subtitle = "优先关注 Computer Use、Codex、ChatGPT；网络用于定位故障"
         let tone: NSColor = bad ? .systemOrange :
-                            network == "ok" ? .systemGreen : .secondaryLabelColor
+                            network == "ok" ? .systemBlue : .secondaryLabelColor
         let header = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 84),
                                         color: .clear, cornerRadius: 13, surface: .hero)
         header.addSubview(AppearanceFillView(frame: NSRect(x: 19, y: 49, width: 9, height: 9),
@@ -1363,7 +1380,12 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         let dot = AppearanceFillView(frame: NSRect(x: 16, y: 37, width: 7, height: 7),
                                      color: statusColor(state), cornerRadius: 3.5)
         card.addSubview(dot)
-        card.addSubview(label(statusText(state), font: .systemFont(ofSize: 12, weight: .semibold),
+        let evidenceSource = evidence["source"] as? String ?? ""
+        let displayStatus = state == "partial" && key == "computer_use"
+            ? (evidenceSource == "local_codex_cua_tool_status" ? "已观察到工具调用" : "控制服务在线")
+            : state == "partial" && key == "codex" ? "请求有记录 · 生成未验"
+            : state == "partial" && key == "chatgpt" ? "公开入口可达" : statusText(state)
+        card.addSubview(label(displayStatus, font: .systemFont(ofSize: 12, weight: .semibold),
                               color: statusColor(state), frame: NSRect(x: 29, y: 32, width: 222, height: 21)))
         card.addSubview(dashboardTwoLine(detail, frame: NSRect(x: 16, y: 6, width: 237, height: 26)))
         doc.addSubview(card)
@@ -1478,16 +1500,16 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         switch dashboardSelection {
         case 0:
             overviewHero(in: doc, y: &y)
-            dashboardHeading("服务状态", in: doc, y: &y)
+            dashboardHeading("关键工作流 · 按优先级", in: doc, y: &y)
             let panel = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 168),
                                            color: .clear, cornerRadius: 12, surface: .tile)
-            dashboardHealthTile("network", title: "基础网络", symbol: "network",
-                                x: 0, y: 84, in: panel)
-            dashboardHealthTile("chatgpt", title: "ChatGPT", symbol: "bubble.left.and.bubble.right",
-                                x: 282, y: 84, in: panel)
-            dashboardHealthTile("codex", title: "Codex", symbol: "terminal",
-                                x: 0, y: 0, in: panel)
             dashboardHealthTile("computer_use", title: "Computer Use", symbol: "macwindow",
+                                x: 0, y: 84, in: panel)
+            dashboardHealthTile("codex", title: "Codex", symbol: "terminal",
+                                x: 282, y: 84, in: panel)
+            dashboardHealthTile("chatgpt", title: "ChatGPT", symbol: "bubble.left.and.bubble.right",
+                                x: 0, y: 0, in: panel)
+            dashboardHealthTile("network", title: "基础网络", symbol: "network",
                                 x: 282, y: 0, in: panel)
             panel.addSubview(AppearanceFillView(frame: NSRect(x: 14, y: 83.5, width: 521, height: 1),
                                                 color: .separatorColor.withAlphaComponent(0.25)))
@@ -1497,7 +1519,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             y += 180
             dashboardHeading("最近一次连接事件", in: doc, y: &y)
             let allEvents = snapshot.workflowTimeline["events"] as? [[String:Any]] ?? []
-            let recent = allEvents.filter { ["codex_remote_session","codex_stream_error","client_log_issue"].contains($0["kind"] as? String ?? "") }
+            let recent = allEvents.filter { ["codex_remote_session","codex_stream_error","client_log_issue","computer_use_invocation"].contains($0["kind"] as? String ?? "") }
                                   .max { ($0["at"] as? Int ?? 0) < ($1["at"] as? Int ?? 0) }
             let latest = AppearanceFillView(frame: NSRect(x: 3, y: y, width: 550, height: 82),
                                             color: .clear, cornerRadius: 12, surface: .event)
@@ -1531,6 +1553,24 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             doc.addSubview(latest)
             y += 88
         case 2:
+            dashboardHeading("Computer Use · 本机实测", in: doc, y: &y)
+            let cua = snapshot.computerUseObservation
+            let cuaBackend = cua["backend"] as? [String:Any] ?? [:]
+            let cuaExecution = cua["execution"] as? [String:Any] ?? [:]
+            let cuaRunning = (cuaBackend["state"] as? String) == "running"
+            dashboardRow("控制服务", explanation: "读取 Mac 进程状态，不能证明任务完成",
+                         value: cuaRunning && snapshot.fresh ? "进程在线" : "未核实在线",
+                         tone: cuaRunning && snapshot.fresh ? .systemBlue : .secondaryLabelColor,
+                         in: doc, y: &y)
+            let cuaReady = cuaBackend["startup_ready_at"] as? Int ?? 0
+            dashboardRow("浏览器后端", explanation: cuaReady > 0 ? "就绪日志时间：" + sampleClock(cuaReady) : "暂无就绪日志",
+                         value: cuaReady > 0 ? "曾记录就绪" : "未验证", in: doc, y: &y)
+            let cuaLast = cuaExecution["latest_at"] as? Int ?? 0
+            let cuaStatus = cuaExecution["latest_status"] as? String ?? ""
+            let cuaLabel = cuaStatus == "completed" ? "调用已完成" : cuaStatus == "failed" ? "调用失败" : "无完成记录"
+            dashboardRow("实际工具调用", explanation: cuaLast > 0 ? "本机调用记录：" + sampleClock(cuaLast) : "最近未找到本机执行证据",
+                         value: cuaLabel, in: doc, y: &y)
+            dashboardNote("仅本机 Codex 工具状态与时间。完成表示工具调用结束；云端操作和最终页面结果尚无法独立核准。", in: doc, y: &y)
             dashboardHeading("ChatGPT · OpenAI", in: doc, y: &y)
             let deepAt = diagnostic["checked_at"] as? Int ?? 0
             dashboardNote(deepAt > 0 ? "深层探测采样：\(sampleClock(deepAt)) · 公开匿名检测，非已登录业务" :

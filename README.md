@@ -362,3 +362,16 @@ TunnelSentinel 的基础网络、ChatGPT 公共入口、Codex TLS/匿名 WebSock
 2026-10-27 20:08 CST 实机故障还原：scutil 显示 HTTPS/HTTP 127.0.0.1:7890、SOCKS 127.0.0.1:7891；此前 Guardian 固守 127.0.0.1:1082，真实 curl 连接旧端口失败，导致当前软件的公共入口“离线”误报。通过系统当前 7890 请求 https://chatgpt.com/cdn-cgi/trace 返回 HTTP 200、约 0.196 秒。修复重载后 Guardian 显示 proxy_client=system_proxy、system_proxy_endpoint=127.0.0.1:7890、network=ok、chatgpt=partial；真实入口 GET HTTP200、约 0.23 秒。菜单栏 Node 页面也已实机打开，显示“系统 HTTPS 代理 127.0.0.1:7890”以及“实际运营节点无法读取，不作推测”。原配置安全开关未更改。
 
 适用范围：macOS 系统当前 HTTP/HTTPS/SOCKS 代理、或可由系统直连探测的 TUN/VPN。代理软件自行管理且没有接入 macOS 系统路由的应用内私有连接无法自动归属；PAC/自动发现未来需调用 macOS CFNetwork 针对每个检测网址单独解析，否则只能保守显示 unknown。即使公共探测成功，也不证明已登录 ChatGPT 或 Computer Use 业务成功。
+
+### 2026-10-27 · Computer Use 独立只读监控与工作流优先级（Guardian 1.5.6 / App 1.6.2）
+
+监控中心总览的阅读顺序改为 **Computer Use → Codex → ChatGPT → 基础网络**；网络故障仍可触发更高告警。节点归属、出口区域、匿名 WebSocket/TLS 采样和其他网站的公开探测继续放在「节点」和「诊断」，不作为工作流已成功的替代依据。
+
+新 `scripts/computer_use_observer.py` 不发起任何登录、网络请求或桌面点击。每约 60 秒由 Guardian 独立线程、最多 4.5 秒超时的子进程运行，采集三层只读证据：
+- **本机服务**：`SkyComputerUseService` 实际进程是否存在；在今日 Codex App 日志中按固定事件名提取最近一次 IAB 浏览器后端启动就绪时间（不是操作成功）。
+- **本机工具调用**：从 `~/.codex/thread_history_1.sqlite` 只读 SQLite JSON 字段（`server=cua_repl`、`tool=js`）提取 `completed/failed/inProgress`、时间和 30 分钟计数。**不读取或复制工具参数、任务内容、响应、截图、会话标识、Cookie 或 Token**。completed 只代表工具调用已返回；不代表网页状态、工作目标或者整条 Computer Use 任务验收通过。
+- **异常优先**：近 5 分钟的工具调用失败、客户端明确浏览器控制异常会单独提示；没有业务完成记录仍只显示部分证据/未知，不会宣称成功，更不参与代理自动切换。
+
+`status.json` 增加 `computer_use_observation`，四轴 `workflow_health.computer_use` 明确区分近期调用、进程在线、无可用记录。观察结果超过 180 秒无新采样就失效；近期调用超过 15 分钟不继续作为当前调用证据。时间线仅记录新近、真实、可去重的本机工具调用完成/失败事件及来源（无私密内容）。
+
+**边界：** 数据源覆盖这台 Mac 上已记录的 Codex CUA 工具调用；ChatGPT 云端 Computer Use、其他浏览器代理、Sky 服务内部的具体鼠标动作，未提供可信本地完成回执时仍无法识别。由人工确认操作达到目标的端到端验收继续待办。Guardian 运行不依赖正在使用 Shadowrocket，遵循当前 macOS 系统代理；不触碰订阅、节点、ChatGPT/Codex 进程或自动切换设置。

@@ -123,7 +123,7 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [x] Codex 只读 SQLite 流断线保持独立观察；菜单提供分层诊断与两个开关
 - [x] 历史独立 Route Controller 安装器和旧 Swift 分组编辑器移入 `legacy/`；不影响当前单 App
 - [x] 回归单测、Swift 类型检查、签名和当前 Shadowrocket 网络实机检查
-- [ ] P1 · 手动端到端 Computer Use 验收：普通非 ChatGPT 网站的浏览器执行、失败时间点与应用日志关联；本地只读代码无法替代真实点击测试
+- [ ] P1 · Computer Use 真正业务验收与被动监控：建立受信任的「单次工具执行结果」只读事件源（明确成功 / 失败 / 时间戳与来源）；普通非 ChatGPT 网站的真实浏览器执行与事件关联。当前仅有 SkyComputerUseService 进程、Codex IAB startup-ready、ScreenCaptureKit 初始化活动及异常日志，无操作完成回执；这些就绪/传输事件不能升级为业务成功或据此自动切换代理。监控中心建议分列「控制后端就绪」和「真实操作结果（尚未验证）」，避免用户成功操作后误读 unknown 为未运行。
 - [ ] P1 · 下次订阅实际更换时验证组绑定、规则匹配和 Shadowrocket UI 状态；当前无法通过公开 API 保证自动重绑定
 - [ ] P1 · 无需前台界面的 Shadowrocket 组读取和锁屏切换仍不可用，禁止标为已交付
 - [ ] P1 · 出现真正的 Codex websocket 业务故障时交叉核对 SQL 日志、TLS/WSS 探测与浏览器后端日志；公开 200 不等于业务可用
@@ -195,3 +195,12 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [x] Shadowrocket 自动节点开关保持关闭，原隧道重连设置保留但不得用于其他代理
 - [x] Python 全量回归、Swift 类型检查、签名 App 实机部署、节点/总览截图
 - [ ] PAC / 自动发现按实际目标域名使用 CFNetwork 解析；当前标示待确认，不冒充真实结果
+
+### 2026-10-27 · Computer Use 本机观察独立修复
+
+- [x] 新增只读本机 Computer Use 工具调用元数据采集，严格区分进程在线、后端就绪、工具调用结束、真实业务目标成功
+- [x] Guardian 异步、限时采集并展示来源/时间/失败，过期失效；不把工具调用完成判成最终成功，不参与自动节点控制
+- [x] 总览按当前工作使用优先级调整为 Computer Use → Codex → ChatGPT → 基础网络；辅助节点/匿名深层探测移至诊断页
+- [ ] P1 · 与用户新一次 Mac 本机 CUA 动作实时对照，验证本机工具执行事件进入总览/时间线；当前晚间云端/其他工具链的动作尚未确认是否能记录
+- [ ] P1 · 寻找官方可授权的 ChatGPT 云端 Computer Use 最终结果回执；若无法获取，不通过读取私密消息、抓包或合成 HTTP 模拟成功
+- [ ] P1 · Codex 完整生成、ChatGPT 已登录成功回复的独立结构化回执（目前公开 GET、模型目录 200、WS 建连仅作为部分证据）

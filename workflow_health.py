@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import time
 from datetime import datetime
+from remote_timeline import merge as merge_remote_sessions
 
 SOURCE='tunnelsentinel_workflow_evidence_v1'
 SEVEN_DAYS=7*86400
@@ -50,7 +51,12 @@ def evaluate(*, now, healthy, proxy_available, deep, stream, issues):
     recent=(stream or {}).get('recent_counts') or {}
     errors=sum(max(0,int(recent.get(k,0))) for k in ('broken_pipe','websocket_handshake','connection_reset'))
     stream_at=int((stream or {}).get('last_at') or 0)
-    if (stream or {}).get('state')=='ok' and errors and 0<=now-stream_at<=300:
+    remote=(stream or {}).get('remote_control') or {}
+    remote_down=remote.get('state')=='ok' and remote.get('connection_state')=='reconnecting'
+    if remote_down:
+        codex=_axis('degraded','Codex Remote Control 正在重新连接',
+                    'codex_remote_control_read_only_sqlite',int(remote.get('last_disconnect_at') or 0))
+    elif (stream or {}).get('state')=='ok' and errors and 0<=now-stream_at<=300:
         codex=_axis('degraded','Codex 流连接近期出现异常','codex_client_read_only_sqlite',stream_at,
                     f'最近错误 {errors} 次')
     elif 0<=now-last_success<=1800 and last_success:
@@ -118,6 +124,7 @@ def update_timeline(path, *, now, axes, proxy_client, stream, issues, egress_his
             add('state_changed','warning' if state in ('failed','degraded') else 'info',name,
                 axis['label'],evidence=axis['source'])
         states[name]=state
+    merge_remote_sessions(events,(stream or {}).get('remote_control'),now)
     last_error=int((stream or {}).get('last_at') or 0)
     count=sum(int(((stream or {}).get('recent_counts') or {}).get(k,0)) for k in
               ('broken_pipe','websocket_handshake','connection_reset'))
@@ -169,9 +176,10 @@ def update_timeline(path, *, now, axes, proxy_client, stream, issues, egress_his
             add('incident_resolved','info','workflow','连续两轮未检测到相同异常；业务恢复仍需实际验证')
             active=None
             data['quiet_samples']=0
+    events.sort(key=lambda e:int(e.get('at') or 0))
     data.update({'events':events[-MAX_EVENTS:],'last_state':states,
                  'last_event_markers':marks,'active_incident':active,'updated_at':int(now)})
     _save(path,data)
-    return {'source':SOURCE,'checked_at':int(now),'events':events[-30:],
+    return {'source':SOURCE,'checked_at':int(now),'events':events[-80:],
             'active_incident':active,'history_window_seconds':SEVEN_DAYS,
             'scope':'metadata_only_no_task_content'}

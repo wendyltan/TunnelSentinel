@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sqlite3
 import time
+from codex_remote_control import scan as scan_remote_control
 
 DB = Path.home() / ".codex/logs_2.sqlite"
 WINDOW = 1800
@@ -42,11 +43,11 @@ def scan(path=DB, now=None):
                     recent_counts[kind] += 1
     except (sqlite3.Error, OSError):
         return {"source":"codex_read_only_sqlite","state":"unavailable","counts":counts,
-                "recent_counts":recent_counts,"last_at":0}
+                "recent_counts":recent_counts,"last_at":0,"remote_control":scan_remote_control(path,now)}
     finally:
         if con is not None:con.close()
     return {"source":"codex_read_only_sqlite","state":"ok","counts":counts,
-            "recent_counts":recent_counts, "last_at":newest,"scan_at":int(now)}
+            "recent_counts":recent_counts, "last_at":newest,"scan_at":int(now),"remote_control":scan_remote_control(path,now)}
 
 
 if __name__ == "__main__":

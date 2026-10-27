@@ -26,8 +26,9 @@ class WorkflowHealthTests(unittest.TestCase):
     def test_stale_evidence_is_not_carried_forward(self):
         r=self.evaluate(deep={'checked_at':BASE-700,'targets':[{'name':'chatgpt_edge','state':'reachable'}],
               'real_codex_client':{'state':'ok','routes':[{'status':200,'last_at':BASE-900,'method':'GET','path':'/backend-api/codex/models'}]}})
-        self.assertEqual(r['chatgpt']['state'],'unknown')
-        self.assertEqual(r['codex']['state'],'unknown')
+        self.assertEqual(r['chatgpt']['state'],'partial')  # current primary public GET only
+        self.assertEqual(r['chatgpt']['source'],'guardian_public_edge_and_local_proxy')
+        self.assertEqual(r['codex']['state'],'unknown')  # stale real client success is NOT reused
     def test_real_model_catalog_is_partial_not_generation(self):
         r=self.evaluate(deep={'checked_at':BASE,'targets':[],
             'real_codex_client':{'state':'ok','routes':[{'status':200,'last_at':BASE-10}],

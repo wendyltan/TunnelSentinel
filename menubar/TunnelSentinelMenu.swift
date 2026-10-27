@@ -546,11 +546,22 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             .contains(snapshot.recoveryState)
     }
 
+    private var networkReviewPending: Bool {
+        snapshot.fresh && (snapshot.workflowHealth["network"] as? [String:Any])?["state"] as? String == "partial"
+    }
+
+    private func sampleClock(_ timestamp: Int) -> String {
+        guard timestamp > 0 else { return "无采样" }
+        return DateFormatter.localizedString(from: Date(timeIntervalSince1970: TimeInterval(timestamp)),
+                                              dateStyle: .none, timeStyle: .short)
+    }
+
     private var headline: String {
         if guardianPaused { return "守护已暂停" }
         if !guardianRunning { return "守护服务未运行" }
         if !snapshot.fresh { return "等待最新检测" }
         if nodePending { return "节点已切换，等待检测" }
+        if networkReviewPending { return "公共入口偶发超时 · 正在复核" }
         if !snapshot.networkHealthy && recoveryBlocked { return "自动恢复受阻 · 需要处理" }
         if !snapshot.networkHealthy { return "代理链路异常" }
         if nodeUnverified { return "基础网络可达 · 节点未核实" }
@@ -563,6 +574,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         if !guardianRunning { return "后台守护未运行，无法读取实时诊断" }
         if !snapshot.fresh { return "没有足够新的健康检测记录" }
         if nodePending { return "节点名称已同步，新节点的链路健康尚未确认" }
+        if networkReviewPending { return "已记录一次真实探测超时，等待再次检测；尚未确认持续故障" }
         if !snapshot.networkHealthy && recoveryBlocked {
             return snapshot.recoveryReason.isEmpty ? "节点切换未成功，请核查 Shadowrocket" :
                 snapshot.recoveryReason
@@ -586,6 +598,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         if !guardianRunning { return "离线" }
         if !snapshot.fresh { return "待检测" }
         if nodePending { return "检测中" }
+        if networkReviewPending { return "复核中" }
         if !snapshot.networkHealthy && recoveryBlocked { return "需人工处理" }
         if !snapshot.networkHealthy { return "连接异常" }
         if snapshot.business == "attention" { return "需留意" }
@@ -596,6 +609,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     private var menuBarStateMarker: String {
         if !snapshot.fresh || guardianPaused || !guardianRunning { return "○" }
         if nodePending { return "◐" }
+        if networkReviewPending { return "◐" }
         if !snapshot.networkHealthy || snapshot.business == "attention" { return "!" }
         if nodeUnverified { return "?" }
         return "●"
@@ -603,7 +617,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
 
     private var accent: NSColor {
         if guardianPaused || !guardianRunning || !snapshot.fresh { return .secondaryLabelColor }
-        if nodePending || snapshot.business == "attention" || nodeUnverified { return .systemOrange }
+        if nodePending || networkReviewPending || snapshot.business == "attention" || nodeUnverified { return .systemOrange }
         return snapshot.networkHealthy ? .systemGreen : .systemRed
     }
 
@@ -685,11 +699,14 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         v.addSubview(nodeBox)
 
         divider(105, in: v)
-        v.addSubview(label("●", font: .systemFont(ofSize: 13), color: snapshot.networkHealthy ? .systemGreen : .systemRed,
+        v.addSubview(label("●", font: .systemFont(ofSize: 13),
+                           color: networkReviewPending ? .systemOrange :
+                                  snapshot.networkHealthy ? .systemGreen : .systemRed,
                            frame: NSRect(x: 20, y: 78, width: 16, height: 19)))
         v.addSubview(label("基础链路", font: .systemFont(ofSize: 12, weight: .medium), color: .labelColor,
                            frame: NSRect(x: 40, y: 78, width: 126, height: 19)))
-        v.addSubview(label(snapshot.fresh && snapshot.networkHealthy ? "公共入口可达" : "待确认 / 不可达",
+        v.addSubview(label(networkReviewPending ? "单次超时 · 复核中" :
+                           snapshot.fresh && snapshot.networkHealthy ? "公共入口可达" : "待确认 / 不可达",
                            font: .systemFont(ofSize: 11), color: .secondaryLabelColor,
                            frame: NSRect(x: 164, y: 78, width: w - 184, height: 19), alignment: .right))
 
@@ -1261,7 +1278,14 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         image.contentTintColor = .secondaryLabelColor
         card.addSubview(image)
         card.addSubview(label(title, font: .systemFont(ofSize: 12.5, weight: .medium),
-                              color: .labelColor, frame: NSRect(x: 42, y: 58, width: 200, height: 20)))
+                              color: .labelColor, frame: NSRect(x: 42, y: 58, width: 135, height: 20)))
+        let evidence = snapshot.workflowHealth[key] as? [String:Any] ?? [:]
+        let observation = evidence["observed_at"] as? Int ?? 0
+        let stamp = observation > 0 ? "测于 \(sampleClock(observation))" : "尚无采样"
+        card.addSubview(label(stamp, font: .systemFont(ofSize: 10),
+                              color: .tertiaryLabelColor,
+                              frame: NSRect(x: 172, y: 60, width: 83, height: 17),
+                              alignment: .right))
         let dot = AppearanceFillView(frame: NSRect(x: 16, y: 37, width: 7, height: 7),
                                      color: statusColor(state), cornerRadius: 3.5)
         card.addSubview(dot)
@@ -1425,12 +1449,16 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             latest.addSubview(go)
             doc.addSubview(latest)
             y += 108
-            doc.addSubview(label("只读监测 · 不会自动更换节点 · 缺少实际验证时显示「尚未验证」",
+            doc.addSubview(label("基础可达 ≠ 已登录业务成功 · 真实客户端证据单独显示",
                                  font: .systemFont(ofSize: 10.5), color: .tertiaryLabelColor,
                                  frame: NSRect(x: 9, y: y, width: 535, height: 18)))
             y += 25
         case 2:
             dashboardHeading("ChatGPT · OpenAI", in: doc, y: &y)
+            let deepAt = diagnostic["checked_at"] as? Int ?? 0
+            dashboardNote(deepAt > 0 ? "深层探测采样：\(sampleClock(deepAt)) · 公开匿名检测，非已登录业务" :
+                          "深层探测暂无有效采样；以下结果不能代表当前 ChatGPT 会话",
+                          in: doc, y: &y)
             if tests.isEmpty {
                 dashboardNote("分层探测正在等待首次结果。后台每约 5 分钟更新一次，不会登录账号或干预代理。", in: doc, y: &y)
             } else {
@@ -1444,7 +1472,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                     let method = isWebsocket ? "模拟 GET / + Upgrade（无登录）" :
                         key == "chatgpt_edge" ? "GET /cdn-cgi/trace（公开入口）" :
                         "GET /（匿名 TLS/HTTP）"
-                    let explanation = "\(method) · HTTP \(code == 0 ? "—" : String(code)) · \(ms)ms"
+                    let observed = test["observed_at"] as? Int ?? deepAt
+                    let explanation = "\(method) · HTTP \(code == 0 ? "—" : String(code)) · \(ms)ms · \(sampleClock(observed))"
                     let display = isWebsocket && state != "upgrade_accepted"
                         && ["tls_reachable_auth_or_path_unverified", "tls_reachable_path_unverified"].contains(state)
                         ? ("仅 HTTP 有响应", NSColor.secondaryLabelColor) : result
@@ -1463,8 +1492,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                 let path = actual["path"] as? String ?? ""
                 let status = actual["status"] as? Int ?? 0
                 let count = actual["count"] as? Int ?? 0
+                let lastAt = actual["last_at"] as? Int ?? 0
                 dashboardRow("真实 Codex \(method)",
-                             explanation: path + " · 取自 Codex 只读日志",
+                             explanation: path + " · 取自 Codex 只读日志 · " + sampleClock(lastAt),
                              value: "HTTP \(status) · \(count) 次",
                              tone: status >= 200 && status < 300 ? .systemGreen : .systemOrange,
                              in: doc, y: &y)
@@ -1486,7 +1516,12 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             dashboardNote("上方均为无登录的模拟探测，并非客户端实际接口请求。WebSocket 必须返回 101 才算成功升级；HTTP 403/404/421 仅表明服务器有响应。", in: doc, y: &y)
             dashboardNote("上方真实客户端记录来自 Codex 自己写入的 SQLite 元数据；没有消息内容、身份令牌和额外请求。浏览器控制异常仍只是被动日志分类。", in: doc, y: &y)
             dashboardHeading("其他 AI 网站 · 公开探测", in: doc, y: &y)
-            if !snapshot.aiMatrixFresh { dashboardNote("AI 分流矩阵约 15 分钟更新一次，当前没有新鲜结果。", in: doc, y: &y) }
+            if !snapshot.aiMatrixFresh {
+                dashboardNote("AI 公开域名检测：暂无有效采样，不能代表当前业务健康。", in: doc, y: &y)
+            } else {
+                dashboardNote("公开域名检测采样：" + snapshot.aiMatrixCheckedAt +
+                              " · 仅供参考，不能证明账号登录或生成成功", in: doc, y: &y)
+            }
             for site in snapshot.aiMatrixFresh ? snapshot.aiMatrixSites : [] {
                 dashboardRow(site.name, explanation: site.domain + (site.location.isEmpty ? "" : " · " + site.location),
                              value: site.status == "reachable" ? "可达 · \(site.ms)ms" : "未确认",

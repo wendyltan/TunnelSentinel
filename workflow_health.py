@@ -23,24 +23,49 @@ def _axis(state, label, source, observed=0, detail=''):
             'observed_at':int(observed or 0),'detail':detail}
 
 
-def evaluate(*, now, healthy, proxy_available, deep, stream, issues):
+def evaluate(*, now, healthy, proxy_available, deep, stream, issues, network_failure_streak=2):
     """Four independent axes; unknown means no business-level proof, not green."""
-    network=_axis('ok' if healthy and proxy_available else 'failed',
-                  '基础网络可达' if healthy and proxy_available else '代理或公共入口异常',
-                  'guardian_public_edge_and_local_proxy',now)
+    # Raw measurements are retained separately in status.probes.
+    # One timeout while the proxy listener still responds is only an
+    # observation requiring a retry, not a confirmed user-facing outage.
+    if not proxy_available:
+        network=_axis('failed','本地代理监听不可用',
+                      'guardian_local_proxy_listener',now)
+    elif healthy:
+        network=_axis('ok','基础网络公共入口可达',
+                      'guardian_public_edge_and_local_proxy',now)
+    elif network_failure_streak < 2:
+        network=_axis('partial','公共入口本次超时 · 正在复核',
+                      'guardian_public_edge_and_local_proxy',now)
+    else:
+        network=_axis('failed','公共入口连续探测失败',
+                      'guardian_public_edge_and_local_proxy',now)
     if not isinstance(deep,dict):deep={}
     stamp=int(deep.get('checked_at') or 0)
     fresh=(0<=now-stamp<=650) if stamp else False
     edge=next((x for x in deep.get('targets',[]) if isinstance(x,dict)
                and x.get('name')=='chatgpt_edge'),{}) if fresh else {}
-    if not healthy or not proxy_available:
-        chatgpt=_axis('degraded','当前公共网络异常 · 登录业务未验','guardian_public_edge_and_local_proxy',now)
+    if network['state']=='failed':
+        chatgpt=_axis('degraded','基础代理或公共入口确认失败 · 登录业务未验',
+                      network['source'],now)
+    elif network['state']=='partial':
+        chatgpt=_axis('partial','公共入口短暂异常复核中 · 登录业务未验',
+                      'guardian_public_edge_and_local_proxy',now)
     elif fresh and edge.get('state')=='reachable':
-        chatgpt=_axis('partial','公开入口可达 · 登录业务未验','anonymous_public_probe',stamp)
+        chatgpt=_axis('partial','公共入口可达 · 登录业务未验',
+                      'anonymous_public_probe',int(edge.get('observed_at') or stamp))
     elif fresh and edge.get('state') in ('transport_failed','probe_unavailable'):
-        chatgpt=_axis('degraded','公开入口异常 · 登录业务未验','anonymous_public_probe',stamp)
+        # A success from the primary 10s GET overrides an isolated secondary
+        # timeout. Both raw observations remain visible in diagnostics.
+        chatgpt=_axis('partial','主检测已可达 · 深层抽样超时',
+                      'guardian_primary_success_secondary_timeout',now,
+                      '深层超时不是已登录聊天失败；继续复核')
+    elif fresh and edge.get('state')=='challenge_or_rate_limit':
+        chatgpt=_axis('partial','主检测已可达 · 深层出现验证限制',
+                      'guardian_primary_success_secondary_challenge',now)
     else:
-        chatgpt=_axis('unknown','尚无新鲜的 ChatGPT 业务证据','none',0)
+        chatgpt=_axis('partial','主检测公开入口可达 · 深层待验证',
+                      'guardian_public_edge_and_local_proxy',now)
     real=deep.get('real_codex_client',{}) if fresh else {}
     if not isinstance(real,dict) or real.get('state')!='ok':real={}
     routes=real.get('routes') or []

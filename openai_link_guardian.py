@@ -619,6 +619,8 @@ class Guardian:
         self.status_path = status_path
         self.log_watcher = LogWatcher(CODEX_LOG_ROOT)
         self.failure_times: Deque[float] = collections.deque()
+        # Display-only confirmation, never a node switching trigger.
+        self.consecutive_public_failures = 0
         self.last_switch_at = 0.0
         self.last_tunnel_reconnect_at = 0.0
         self.started_at = time.monotonic()
@@ -951,7 +953,7 @@ class Guardian:
             self.healthy_streak_count = 1
         if self.healthy_streak_count >= 2 and node not in self.learned_good_nodes:
             self.learned_good_nodes.insert(0, node)
-            self.logger.info("known-good node learned after two checks node=%s", node)
+            self.logger.info("historical public-edge HTTP200 observed twice node=%s", node)
 
     def _load_previous_status(self) -> dict:
         try:
@@ -1170,6 +1172,7 @@ class Guardian:
         healthy: bool,
         proxy_available: bool = True,
         tunnel_stop_reason: str = "none",
+        network_failure_streak: int = 2,
     ) -> None:
         issues = self.log_watcher.issue_summary()
         with self.codex_stream_lock:
@@ -1214,7 +1217,8 @@ class Guardian:
         deep["running"]=deep_running
         now=time.time()
         workflow_axes=evaluate_workflow_health(now=now,healthy=healthy,
-                         proxy_available=proxy_available,deep=deep,stream=stream_info,issues=issues)
+                         proxy_available=proxy_available,deep=deep,stream=stream_info,
+                         issues=issues,network_failure_streak=network_failure_streak)
         try:
             timeline=update_workflow_timeline(self.status_path.parent / "workflow_timeline.json",
                          now=now, axes=workflow_axes,
@@ -1300,11 +1304,23 @@ class Guardian:
             "ai_matrix_limit": "Public access/routing only; not node unlock or authenticated chat",
             "version": VERSION,
             "pid": os.getpid(),
+            # These are semantic summaries of independent evidence axes;
+            # an HTTP 200 cannot become "GPT business healthy".
             "overall_status": (
-                "offline" if not healthy or not proxy_available
-                else "attention" if issues else "reachable"
+                "offline" if workflow_axes["network"]["state"] == "failed"
+                else "verifying" if workflow_axes["network"]["state"] == "partial"
+                else "attention" if issues or any(
+                    workflow_axes[k]["state"]=="degraded" for k in ("codex","computer_use"))
+                else "reachable"
             ),
-            "business_status": "attention" if issues else "no_recent_errors",
+            "business_status": (
+                "attention" if issues or any(
+                    workflow_axes[k]["state"]=="degraded" for k in ("codex","computer_use"))
+                else "client_metadata_only" if workflow_axes["codex"]["state"]=="partial"
+                else "unverified"
+            ),
+            "business_evidence_scope": "no_authenticated_ChatGPT_or_Computer_Use_completion_proof",
+            "public_edge_failure_streak": network_failure_streak if not healthy else 0,
             "route_management": ("clash_observe_only" if clash_active else
                                  "shadowrocket_policy_unverified" if self.config.get("native_fallback_enabled",False)
                                  else "shadowrocket_global_monitor"),
@@ -1329,7 +1345,10 @@ class Guardian:
             "recovery_reason": self.recovery_reason,
             "recovery_attempt_count": self.recovery_attempt_count,
             "recovery_retry_seconds": max(0, round(self.recovery_retry_at - time.monotonic())),
+            # Back-compat: historical probe passes, never "GPT-good" servers.
             "known_good_candidates": self.known_good_candidates()[:12],
+            "historical_public_edge_nodes": self.known_good_candidates()[:12],
+            "known_good_candidates_scope": "historical_global_selection_public_trace_http200_only_not_GPT_business_or_current_subscription",
             "business_issues": issues,
             "issue_window_seconds": ISSUE_WINDOW_SECONDS,
             "last_public_edge_incident": self.last_public_edge_incident,
@@ -1528,6 +1547,7 @@ class Guardian:
                 healthy, results = self.recover_missing_tunnel()
                 proxy_available = proxy_endpoint_available(self.config["proxy"])
             if healthy:
+                self.consecutive_public_failures = 0
                 self.observe_edge_incident(results, True)
                 self.write_status(
                     results,
@@ -1571,12 +1591,14 @@ class Guardian:
         # Desktop errors are displayed, but cannot independently rotate a
         # healthy proxy. Bad probes are debounced in the fast-check loop.
         if healthy:
+            self.consecutive_public_failures = 0
             self.failure_times.clear()
             self.note_verified_healthy()
             # A healthy probe is not proof that any node was switched or recovered.
             self.recovery_state = "monitoring"
             self.recovery_reason = ""
         else:
+            self.consecutive_public_failures = min(100, self.consecutive_public_failures+1)
             self.record_failures(1)
             if self.recovery_state not in ("selector_unavailable","no_candidates",
                                            "candidate_unhealthy"):
@@ -1588,6 +1610,7 @@ class Guardian:
             healthy,
             proxy_available=True,
             tunnel_stop_reason=tunnel_stop_reason,
+            network_failure_streak=self.consecutive_public_failures,
         )
         self.logger.info(
             "health=%s node=%s score=%d probes=%s",
@@ -1605,6 +1628,7 @@ class Guardian:
                 self.last_probe_results if recovered else results,
                 len(log_failures), recovered, proxy_available=True,
                 tunnel_stop_reason=tunnel_stop_reason,
+                network_failure_streak=self.consecutive_public_failures if not recovered else 0,
             )
             return recovered
         return healthy

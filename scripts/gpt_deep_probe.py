@@ -12,6 +12,12 @@ import sys
 import time
 from urllib.parse import urlparse
 
+# Match the Guardian's actual primary public-edge probe. Slow but valid
+# HTTPS handshakes must not fail at 6s in one detector and succeed at 10s in another.
+CONNECT_TIMEOUT_SECONDS = 5
+MAX_REQUEST_SECONDS = 10
+PROCESS_TIMEOUT_SECONDS = 12
+
 # Every destination is intentionally fixed; never accept an arbitrary URL from config.
 TARGETS = (
     ('chatgpt_edge','https://chatgpt.com/cdn-cgi/trace','http200'),
@@ -44,7 +50,7 @@ def test_target(item, proxy:str)->dict:
     # This does not reuse ChatGPT/Codex's authenticated endpoint path or token.
     method='HTTP/1.1 GET / + Upgrade: websocket (anonymous synthetic)' if kind=='wss_handshake' else ('HTTPS GET /cdn-cgi/trace (public)' if kind=='http200' else 'HTTPS GET / (anonymous TLS/HTTP)')
     cmd=['/usr/bin/curl','--silent','--show-error','--proxy',proxy,
-         '--connect-timeout','3','--max-time','6','--output','/dev/null',
+         '--connect-timeout',str(CONNECT_TIMEOUT_SECONDS),'--max-time',str(MAX_REQUEST_SECONDS),'--output','/dev/null',
          '--write-out','%{http_code} %{time_total}']
     if kind=='wss_handshake':
         cmd.extend(['--http1.1','--header','Connection: Upgrade',
@@ -52,12 +58,13 @@ def test_target(item, proxy:str)->dict:
                     '--header','Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=='])
     cmd.append(url)
     try:
-        result=subprocess.run(cmd,capture_output=True,text=True,timeout=8,check=False)
+        result=subprocess.run(cmd,capture_output=True,text=True,timeout=PROCESS_TIMEOUT_SECONDS,check=False)
         fields=result.stdout.strip().split()
         http=int(fields[0]) if fields and fields[0].isdigit() else 0
         ms=round(float(fields[1])*1000) if len(fields)>1 else None
         return {'name':name,'state':classify(result.returncode,http,kind),
                 'http_code':http,'latency_ms':ms,'curl_exit':result.returncode,
+                'observed_at':int(time.time()),
                 'probe_method':method,'scope':'anonymous_transport_not_authenticated_business'}
     except (OSError,ValueError,IndexError,subprocess.SubprocessError):
         return {'name':name,'state':'probe_unavailable','http_code':0,'latency_ms':None,

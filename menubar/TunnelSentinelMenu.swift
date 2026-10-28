@@ -39,6 +39,7 @@ private struct Snapshot {
     var codexStream: [String: Any] = [:]
     var workflowHealth: [String: Any] = [:]
     var computerUseObservation: [String: Any] = [:]
+    var clientEventCorrelation: [String: Any] = [:]
     var workflowTimeline: [String: Any] = [:]
     var clashMode = ""
     var clashGroup = ""
@@ -327,6 +328,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         next.codexStream = values["codex_stream_diagnostics"] as? [String:Any] ?? [:]
         next.workflowHealth = values["workflow_health"] as? [String:Any] ?? [:]
         next.computerUseObservation = values["computer_use_observation"] as? [String:Any] ?? [:]
+        next.clientEventCorrelation = values["client_event_correlation"] as? [String:Any] ?? [:]
         next.workflowTimeline = values["workflow_timeline"] as? [String:Any] ?? [:]
         next.clashAutoSwitchMode = values["clash_auto_switch_mode"] as? String ?? "simulation_only"
         if let failover = values["clash_failover_status"] as? [String:Any] {
@@ -748,6 +750,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             String(snapshot.automaticControlEnabled),String(snapshot.tunnelRecoveryEnabled),
             String(describing:snapshot.deepConnection),String(describing:snapshot.codexStream),
             String(describing:snapshot.workflowHealth),String(describing:snapshot.computerUseObservation),
+            String(describing:snapshot.clientEventCorrelation),
             String(describing:snapshot.workflowTimeline),
             snapshot.clashAutoSwitchMode,snapshot.clashFailoverState,
             snapshot.clashFailoverFrom,snapshot.clashFailoverTo,String(snapshot.clashFailoverActions),
@@ -852,6 +855,17 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     // One-shot Codex/Work environment action. Independent of proxy groups and
     // of Guardian's node/automatic failover; never restarts ChatGPT or Codex.
     private func codexProxyEnvStatus() -> String {
+        // Protocol compatibility is explicit: SOCKS/PAC cannot silently be
+        // converted to HTTP_PROXY. Existing managed values remain untouched.
+        if snapshot.systemProxyState == "pac_unresolved" {
+            return "PAC 需逐目标解析 · 暂不自动同步"
+        }
+        if snapshot.systemProxyType == "socks" {
+            return "SOCKS5 已识别 · Codex 环境待人工核对"
+        }
+        if snapshot.systemProxyState == "direct_or_tun" {
+            return "直连 / TUN · 无显式 HTTP 代理"
+        }
         let path = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/.env")
         guard let raw = try? String(contentsOf: path, encoding: .utf8) else {
@@ -1613,6 +1627,13 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             dashboardRow("Codex 实际 HTTP 请求", explanation: "近 30 分钟客户端记录，不代表最终生成成功",
                          value: routes.isEmpty ? "暂无可靠记录" : "\(success) 次 HTTP 200",
                          in: doc, y: &y)
+            let overlap = snapshot.clientEventCorrelation
+            if snapshot.fresh && (overlap["state"] as? String) == "nearby_events" {
+                let gap = overlap["gap_seconds"] as? Int ?? 0
+                dashboardRow("本机事件时间接近",
+                             explanation: "Codex 流故障与 Computer Use 工具事件时间相近；不能据此认定同一任务、网络原因或云端完成",
+                             value: "相距约 \(gap) 秒", in: doc, y: &y)
+            }
             dashboardNote("公开测试、服务进程与客户端日志相互独立；只有真正的请求级归属才能确认机场节点。", in: doc, y: &y)
         default:
             dashboardHeading("Codex / Work 代理入口", in: doc, y: &y)

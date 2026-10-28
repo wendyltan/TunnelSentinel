@@ -413,3 +413,10 @@ TunnelSentinel 的基础网络、ChatGPT 公共入口、Codex TLS/匿名 WebSock
 P0 修复真实隧道消失导致专属恢复不可达的矛盾：仅保留不持久化的 90 秒、同一监听端口经进程证明的 Shadowrocket 所有权“短租约”，发生监听消失后还须新鲜系统代理入口匹配、macOS `Plugin failed` 明确故障、原主程序仍运行，才允许一次冷却限制的专属重连；任何用户手动停止、日志未知、其他软件占用或权限拒绝均不操作。真正恢复只有原进程所有权和公共链路均重新验证才算通过。限于明确日志类型/当前程序运行生命周期，不保证所有 VPN 内核故障都可自动恢复。
 
 P1 完全停止从 Shadowrocket 受保护全局偏好周期性读取节点名；删除旧 `OpenAI-Resilience` 四节点 AX 编辑器及 45 秒恢复检查（原生控制器不再编入菜单），避免继续保留已删除代理组的活跃依赖。通用系统代理检测、Codex/Work `.env` 操作、真实 Codex 连接日志、公开出口采样、Computer Use 本机证据维持原有功能。未自动换机场节点、未打开敏感代理日志，用户无需改变目前稳定的代理软件。
+
+### 1.6.8 · 通用只读 API、协议边界与本机事件关联（2026-10-28）
+
+- 现行 TODO 由历史 269 行归档重建，见 `research/todo-archive-20261028-pre-generalization.md`。
+- 可选 Mihomo Unix socket：用户可在 Guardian `config.json` 显式配置 `"mihomo_socket_path": "/private/var/folders/.../mihomo.sock"`，默认空；仅接受同用户本机 Unix socket、安全父目录，并以当前系统代理端口与 API mixed-port 双重确认，不开放 TCP API/修改代理规则。兼容旧 Clash Verge 配置文件发现但**不要求安装该软件**。缺少专属 AI 分组时只对真实允许列表的 OpenAI 连接链给出短期路由观察，不推断 ChatGPT 进程来源。用户当前 Forest 无授权 socket，保持通用模式即可。
+- 本机 SOCKS-only 使用 `socks5h` 作公共代理探测，TUN/直连保持无本地代理条件下的出口探测；Codex `.env` 仅对通过验证的 HTTP/Mixed 做人工同步，SOCKS/PAC/TUN 只作真实状态说明。PAC 的动态逐目标解析仍待独立安全设计。
+- 记录页只在 Codex 真实断流事件和 Computer Use 本机工具调用双方来源可信、时间相近时显示「本机事件时间接近」，非因果或业务完成证明。用户内容、截图、工具参数均不进入记录。

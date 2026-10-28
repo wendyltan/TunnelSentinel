@@ -64,6 +64,8 @@ DEFAULTS = {
     "native_fallback_group": "",
     "proxy_backend_auto_detect_enabled": True,
     "clash_auto_failover_enabled": False,
+    # Optional user-approved local Mihomo Unix socket; no TCP API exposure.
+    "mihomo_socket_path": "",
     # A single explicit safety gate for ALL node-changing controllers.
     # Defaults read-only; the tunnel reconnect feature has its own switch.
     "automatic_control_enabled": False,
@@ -621,6 +623,31 @@ class LogWatcher:
                 self.issue_events.append((time.time(), "pubsub"))
                 self.pubsub_last_failure_at[renderer] = now
         return failures
+
+
+def correlate_client_events(stream: dict, computer_use: dict, now: float) -> dict:
+    """Bounded time-only correlation, NEVER a shared-task or causal claim."""
+    base={"source":"local_client_timestamp_comparison_v1",
+          "state":"unverified","scope":"temporal_overlap_only_not_causal_or_task_completion"}
+    execution=computer_use.get("execution") or {}
+    if stream.get("state") != "ok" or execution.get("state") != "ok":
+        return base
+    try:
+        counts=stream.get("recent_counts") or {}
+        errors=sum(max(0,int(counts.get(k,0))) for k in (
+            "broken_pipe","websocket_handshake","connection_reset"))
+        stream_at=int(stream.get("last_at") or 0)
+        tool_at=int(execution.get("latest_at") or 0)
+        if not(errors and 0<=now-stream_at<=1800 and 0<=now-tool_at<=1800):
+            return dict(base,state="no_recent_overlap")
+        delta=abs(stream_at-tool_at)
+        if delta>120:
+            return dict(base,state="no_recent_overlap")
+        return dict(base,state="nearby_events",gap_seconds=delta,
+                    codex_error_at=stream_at,local_tool_at=tool_at,
+                    local_tool_status=str(execution.get("latest_status",""))[:18])
+    except (TypeError,ValueError):
+        return base
 
 
 class Guardian:
@@ -1346,6 +1373,7 @@ class Guardian:
         } if clash_active else {}
         payload = {
             "workflow_health": workflow_axes,
+            "client_event_correlation": correlate_client_events(stream_info,computer_use,now),
             "computer_use_observation": computer_use,
             "workflow_timeline": timeline,
             "deep_connection_diagnostics": deep,
@@ -1546,7 +1574,13 @@ class Guardian:
         if not helper.is_file():
             return {}
         try:
-            proc=subprocess.run([sys.executable,str(helper)],capture_output=True,
+            arguments=[sys.executable,str(helper)]
+            # Only an explicitly configured local socket is passed to the
+            # optional adapter; no private folder scan or public TCP API.
+            socket_path=self.config.get("mihomo_socket_path","")
+            if isinstance(socket_path,str) and socket_path:
+                arguments += ["--socket",socket_path]
+            proc=subprocess.run(arguments,capture_output=True,
                                 text=True,check=False,timeout=6)
             observation=json.loads(proc.stdout) if proc.returncode==0 else {}
             return observation if observation.get("source")=="mihomo_unix_readonly" else {}

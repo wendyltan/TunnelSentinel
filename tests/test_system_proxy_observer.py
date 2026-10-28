@@ -24,6 +24,16 @@ class ProxyObserverTests(unittest.TestCase):
  def test_socks_only_and_dns_via_socks(self):
   x=parse_scutil('SOCKSEnable : 1\nSOCKSProxy : 127.0.0.1\nSOCKSPort : 7891')
   self.assertEqual(x['proxy_url'],'socks5h://127.0.0.1:7891')
+ def test_socks_probe_uses_server_side_dns_no_hidden_fallback(self):
+  from types import SimpleNamespace
+  with mock.patch.object(g.subprocess,'run',return_value=SimpleNamespace(
+       returncode=0,stdout='200',stderr='')) as runner:
+   g.curl_probe('edge','https://chatgpt.com/cdn-cgi/trace','socks5h://127.0.0.1:7891')
+  arguments=runner.call_args.args[0]
+  self.assertEqual(arguments[arguments.index('--proxy')+1],
+                   'socks5h://127.0.0.1:7891')
+  self.assertNotIn('--noproxy',arguments)
+
  def test_pac_is_unknown_not_false_failure(self):
   self.assertEqual(parse_scutil(HTTP+'ProxyAutoConfigEnable : 1\n')['state'],'pac_unresolved')
  def test_direct_or_tun(self):

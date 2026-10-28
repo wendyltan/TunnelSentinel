@@ -39,6 +39,33 @@ class ClashObserverTests(unittest.TestCase):
         self.assertFalse(out['switch_write_enabled'])
         self.assertNotIn('token-is-private',str(out))
 
+    def test_mihomo_without_named_group_still_reports_request_route(self):
+        result=clash.summarize({'mode':'rule'},{'proxies':{}},
+                               {'connections':[{'metadata':{'host':'ws.chatgpt.com'},
+                                                'chains':['node99','Proxies']}]})
+        self.assertEqual(result['active_request_node'],'node99')
+        self.assertEqual(result['scope'],'generic_openai_active_connection_only')
+
+    def test_user_selected_local_unix_socket_still_needs_matching_port(self):
+        import socket,tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path=str(Path(tmp)/'mihomo.sock')
+            with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as sock:
+                sock.bind(path)
+                self.assertEqual(clash.validate_socket_path(path),path)
+                with patch.object(clash,'system_proxy',return_value=('127.0.0.1',7890)), \
+                     patch.object(clash,'api',return_value={'mixed-port':7891}) as api:
+                    result=clash.inspect(path)
+                self.assertEqual(result['reason'],'proxy_port_mismatch')
+                self.assertEqual(api.call_count,1)
+
+    def test_reject_unapproved_socket_without_opening_api(self):
+        with patch.object(clash,'system_proxy',return_value=('127.0.0.1',7890)), \
+             patch.object(clash,'api') as api:
+            result=clash.inspect('/tmp/unapproved.sock')
+        self.assertFalse(result['active'])
+        api.assert_not_called()
+
     def test_inactive_proxy_refuses_observation(self):
         with patch.object(clash,'system_proxy',return_value=('',0)),patch.object(clash,'api') as api:
             result=clash.inspect()

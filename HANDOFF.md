@@ -567,3 +567,11 @@ P1: `Guardian.cycle` 和启动初始化**不再默认调用** `current_shadowroc
 验收：总览和三标签仍正常；当前 Forest 7890 应显示通用系统代理，不能展示 Shadowrocket 专属开关或旧分组；转回 Shadowrocket 后专属隧道重连开关仅在拥有者确认为该 App 时出现（不要为此强行切换）。真实异常重连尚未断线实测，不可把单测当实机证明。
 
 补充：P0/P1 最终代码还去掉了 `Guardian.shadowrocket_proxy` 历史端口比较；只有当前系统代理 URL 和实时 `listener_owner=shadowrocket` 确认归属后才建立短租约，当前 Shadowrocket 即使换为其他本机端口也可被检测。新增针对原配置 1082、当前确证 9090 的测试。别在未来变更时恢复「旧 1082」判断。
+
+## 2026-10-28 · 下一阶段（按用户同意的推荐顺序）
+
+1. 原 269 行 `PROJECT_TODO.md` 原样归档到 `research/todo-archive-20261028-pre-generalization.md`；现行 TODO 只列有效任务。**勿复活旧 OpenAI-Resilience、旧 GUI、旧独立控制器**。
+2. `scripts/clash_observer.py` 现在支持用户显式指定的本机 Mihomo Unix socket（`--socket`，Guardian 配置 `mihomo_socket_path`，默认空，不修改实时配置）。检查 socket 类型、本人 owner、父目录权限、拒绝 /tmp 通用地址，严格将 API 的 mixed-port 与 macOS 当前系统代理端口对比。Mihomo 官方 socket 无需密钥，故**绝不能扫描所有 socket**或打开公网 HTTP API。原 Clash Verge 路径仍作为向后兼容的可选发现入口；没有名叫 AI 的组也可按实时 OpenAI 请求 chains 识别最近路由，但并不等于证实它属于 ChatGPT Desktop 的进程。没有确认接口就保留通用 system_proxy，默认不会连 Forest 私有 socket。
+3. SOCKS-only 已由 `system_proxy_observer` 识别为 `socks5h`，`curl_probe` 会携远端 DNS 通过 SOCKS 进行公共测试；TUN/直连按当前无显式代理的公开出口进行观察。Codex .env 不自动接受 SOCKS/PAC/TUN，GUI 显示真实协议限制。**PAC 目标 URL 解析还未完成**：Apple CFNetwork 可实现，但 PAC 可能拉取外部脚本，必须另设计授权且限时的诊断流程，不自动执行。
+4. 新增 `correlate_client_events`：只有真实 Codex stream 采样与本机 Computer Use 工具执行元数据均标记 ok、最近 30 分钟内且时间差 <= 120 秒才生成 `client_event_correlation`（仅时间差与状态，不含用户指令/请求内容）；记录页条件显示「本机事件时间接近」。这不是同一任务、网络根因、登录业务完成或云端执行成功的证据。
+5. 部署时保留现有 Forest/current proxy、Codex .env 和自动节点控制，按实际回归/签名检查结果填写；需要日后真实他家 Mihomo socket、PAC 和云端 Computer Use 最终回执的实机验收。禁止为了测试切换网络、写订阅或开代理内核 API。

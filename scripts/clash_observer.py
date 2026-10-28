@@ -27,17 +27,33 @@ class UnixHTTP(http.client.HTTPConnection):
         self.sock.settimeout(1.4)
         self.sock.connect(self.path)
 
+def validate_socket_path(value: str) -> str:
+    """Validate an opt-in local Unix socket without scanning other app data."""
+    try:
+        path = Path(value)
+        if (not path.is_absolute() or len(str(path)) > 450 or path.is_symlink()
+            or not (str(path).startswith(str(Path.home()) + '/')
+                    or str(path).startswith('/private/var/folders/')
+                    or str(path).startswith('/var/folders/'))):
+            return ''
+        st = path.stat()
+        parent = path.parent.stat()
+        if (st.st_uid != os.geteuid() or not stat.S_ISSOCK(st.st_mode)
+            or parent.st_uid not in (0, os.geteuid())
+            or parent.st_mode & 0o022):
+            return ''
+        return str(path)
+    except (OSError, ValueError):
+        return ''
+
+
 def read_socket_path(path: Path = CLASH_ROOT / 'clash-verge.yaml') -> str:
     if not path.is_file(): return ''
     content = path.read_text(encoding='utf-8', errors='replace')
     m = re.search(r'^external-controller-unix:\s*[\x27\x22]?([^\x27\x22\n#]+)', content, re.M)
     if not m: return ''
     v = m.group(1).strip()
-    try:
-        st = os.stat(v)
-        if st.st_uid != os.geteuid() or not stat.S_ISSOCK(st.st_mode): return ''
-    except OSError: return ''
-    return v if (v.startswith('/var/folders/') or v.startswith('/private/var/folders/')) else ''
+    return validate_socket_path(v)
 
 def api(path: str, route: str) -> dict:
     if route not in ('/configs', '/proxies', '/connections', '/providers/proxies', '/version'):
@@ -59,12 +75,20 @@ def system_proxy() -> tuple[str, int]:
         p = subprocess.run(['/usr/sbin/scutil','--proxy'],capture_output=True,text=True,timeout=2)
         if p.returncode: return '', 0
         data = {}
-        for key,value in re.findall(r'^\s*(HTTPEnable|HTTPProxy|HTTPPort|HTTPSEnable|HTTPSProxy|HTTPSPort)\s*:\s*([^\n]+)',p.stdout,re.M):
+        for key,value in re.findall(r'^\s*(HTTPEnable|HTTPProxy|HTTPPort|HTTPSEnable|HTTPSProxy|HTTPSPort|ProxyAutoConfigEnable|ProxyAutoDiscoveryEnable)\s*:\s*([^\n]+)',p.stdout,re.M):
             data[key] = value.strip()
-        if data.get('HTTPEnable')!='1' or data.get('HTTPSEnable')!='1':return '',0
-        if data.get('HTTPProxy') not in ('127.0.0.1','localhost') or data.get('HTTPSProxy') != data.get('HTTPProxy'):return '',0
-        if data.get('HTTPSPort') != data.get('HTTPPort'):return '',0
-        return data.get('HTTPProxy',''),int(data.get('HTTPPort',0))
+        if data.get('ProxyAutoConfigEnable')=='1' or data.get('ProxyAutoDiscoveryEnable')=='1':
+            return '',0
+        # HTTPS is the route relevant to ChatGPT/Codex. macOS does not
+        # require the separate HTTP proxy to use the same port.
+        if data.get('HTTPSEnable')=='1':
+            host=data.get('HTTPSProxy','')
+            port=int(data.get('HTTPSPort',0))
+        elif data.get('HTTPEnable')=='1':
+            host=data.get('HTTPProxy','')
+            port=int(data.get('HTTPPort',0))
+        else:return '',0
+        return (host,port) if host in ('127.0.0.1','localhost') and 0<port<65536 else ('',0)
     except (OSError,ValueError,subprocess.TimeoutExpired):return '',0
 
 def is_gpt_host(host: str)->bool:
@@ -97,7 +121,7 @@ def summarize(config: dict, proxies: dict, connections: dict) -> dict:
         if not is_gpt_host(str(md.get('host') or '')):continue
         chain=entry.get('chains') or []
         if not isinstance(chain,list) or not chain:continue
-        if observed_group not in chain: continue
+        # Request-level chain is still observable without a predefined AI group.
         sample_count+=1
         if not ai_chain: ai_chain=[str(v)[:100] for v in chain[:8]]
         observed_nodes.add(str(chain[0])[:95])
@@ -120,13 +144,16 @@ def summarize(config: dict, proxies: dict, connections: dict) -> dict:
             candidate_list.append(evaluate_candidate(name,allproxies[name],group.get('now','') if dedicated else downstream.get('now','')))
     eligible=[x for x in candidate_list if x['eligible']]
     mode=str(config.get('mode','unknown')).lower()
-    return {'source':'mihomo_unix_readonly','observed_at':int(time.time()),'mode':mode,'tun_enabled':bool((config.get('tun') or {}).get('enable')) if isinstance(config.get('tun'),dict) else False,'ai_group':group_name,'ai_group_type':str(group.get('type',''))[:24],'ai_selection':str(selected)[:95], 'child_group_type':str(downstream.get('type',''))[:24],'selected_node':str(group.get('now','') if dedicated else downstream.get('now',''))[:95], 'active_request_node':current if sample_count else '', 'active_request_chain':ai_chain, 'active_gpt_connections':sample_count, 'candidate_count':len(candidate_list),'eligible_count':len(eligible),'dry_run_candidate':min(eligible,key=lambda x:x['delay_ms'])['name'] if eligible else '', 'switch_simulation':('dedicated_policy_ready_for_guarded_failover' if eligible else 'insufficient_evidence_no_write') if dedicated else ('shared_ai_policy_requires_dedicated_openai_group' if eligible else 'insufficient_evidence_no_write'),'switch_write_enabled':False,'scope':'dedicated_openai_policy' if dedicated else 'shared_ai_policy','active_proxy_count':len(allproxies)}
+    return {'source':'mihomo_unix_readonly','observed_at':int(time.time()),'mode':mode,'tun_enabled':bool((config.get('tun') or {}).get('enable')) if isinstance(config.get('tun'),dict) else False,'ai_group':group_name,'ai_group_type':str(group.get('type',''))[:24],'ai_selection':str(selected)[:95], 'child_group_type':str(downstream.get('type',''))[:24],'selected_node':str(group.get('now','') if dedicated else downstream.get('now',''))[:95], 'active_request_node':current if sample_count else '', 'active_request_chain':ai_chain, 'active_gpt_connections':sample_count, 'candidate_count':len(candidate_list),'eligible_count':len(eligible),'dry_run_candidate':min(eligible,key=lambda x:x['delay_ms'])['name'] if eligible else '', 'switch_simulation':('dedicated_policy_ready_for_guarded_failover' if eligible else 'insufficient_evidence_no_write') if dedicated else ('shared_ai_policy_requires_dedicated_openai_group' if eligible else 'insufficient_evidence_no_write'),'switch_write_enabled':False,'scope':'dedicated_openai_policy' if dedicated else 'shared_ai_policy' if group_name else 'generic_openai_active_connection_only','active_proxy_count':len(allproxies)}
 
-def inspect() -> dict:
+def inspect(socket_path: str = '') -> dict:
     addr,port=system_proxy()
     if not addr or not (0<port<65536): return {'active':False,'source':'macos_system_proxy','reason':'clash_not_system_proxy'}
-    path=read_socket_path()
-    if not path:return {'active':False,'source':'mihomo_unix_readonly','reason':'socket_unavailable'}
+    # Explicit, user-authorized socket wins. The legacy known client path is
+    # retained only as a backward-compatible optional adapter discovery.
+    path=validate_socket_path(socket_path) if socket_path else read_socket_path()
+    if not path:return {'active':False,'source':'mihomo_unix_readonly',
+                        'reason':'socket_unavailable_or_untrusted'}
     try:
         config=api(path,'/configs')
         configured_port=int(config.get('mixed-port',0))
@@ -138,4 +165,8 @@ def inspect() -> dict:
         return {'active':False,'source':'mihomo_unix_readonly','reason':type(exc).__name__}
 
 if __name__=='__main__':
-    print(json.dumps(inspect(),ensure_ascii=False,separators=(',',':')))
+    import argparse
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--socket', default='', help='User-approved local Unix socket path')
+    args=parser.parse_args()
+    print(json.dumps(inspect(args.socket),ensure_ascii=False,separators=(',',':')))

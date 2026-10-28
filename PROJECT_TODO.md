@@ -204,3 +204,12 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [ ] P1 · 与用户新一次 Mac 本机 CUA 动作实时对照，验证本机工具执行事件进入总览/时间线；当前晚间云端/其他工具链的动作尚未确认是否能记录
 - [ ] P1 · 寻找官方可授权的 ChatGPT 云端 Computer Use 最终结果回执；若无法获取，不通过读取私密消息、抓包或合成 HTTP 模拟成功
 - [ ] P1 · Codex 完整生成、ChatGPT 已登录成功回复的独立结构化回执（目前公开 GET、模型目录 200、WS 建连仅作为部分证据）
+
+### 2026-10-28 · 今日故障转移证据与下阶段准入
+
+- [x] 实机只读关联 Guardian 公共探测异常、Codex broken pipe/Remote Control、ChatGPT thread sync、全局节点与出口变化，形成 `research/shadowrocket-failover-forensics-20261028.md`
+- [x] 添加只读 `scripts/shadowrocket_failover_preflight.py`：严格拒绝过期规则审计、`PROXY` 错当 `OpenAI-Resilience`、全局选中节点和公共出口冒充 per-node 路由证明；无可靠来源时手动节点推荐返回 null
+- [ ] P0 · 在不改路由的情况下使用 Mac App 已有 Shadowrocket「测试规则」动作对当前配置重新核对 `chatgpt.com`/`ws.chatgpt.com`/`api.openai.com`，确定实际命中的是 `PROXY` 还是 `OpenAI-Resilience`；审计应带现时来源和有效期
+- [ ] P0 · 通过 Shadowrocket 官方界面确认「启用回退」真实状态、OpenAI 代理组具体绑定规则/订阅、候选数、自动测试是否启用、测法/URL/间隔；不要把 TunnelSentinel 的 `native_fallback_enabled=true` 配置视为运行事实
+- [ ] P1 · 根据至少一次原生请求级路由归属 + 实际业务结果，判定是否有可供评估的 GPT 专用候选；保持原有自动节点切换关闭，未知不推荐
+- [ ] P1 · 在用户明确批准变更及具备回滚条件后，才讨论修改规则绑定/自动测试 URL 或启用 Shadowrocket 全局回退，避免误触生产节点

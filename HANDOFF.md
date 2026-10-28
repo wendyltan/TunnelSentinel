@@ -505,3 +505,11 @@ Production Guardian backup: ~/Library/Application Support/OpenAILinkGuardian/bac
 - 菜单 `install-menubar.sh` 完成开发者签名，`codesign --verify --strict` PASS，`~/Applications/TunnelSentinel.app` `CFBundleShortVersionString=1.6.2`，旧版备份 `~/Library/Application Support/OpenAILinkGuardian/backups/branding-20261027-224713`。App / Guardian 均在运行，AX 查询到 TunnelSentinelMenu 进程及菜单栏。
 - 22:49 实际 Guardian `status.json`：Computer Use partial（Sky 服务在线/浏览器就绪，当前无新工具完成证据），Codex partial（真实客户端请求，生成未验），ChatGPT partial（公开入口可达，已登录未验），network ok；系统当前属于 Shadowrocket 127.0.0.1:1082 且公网入口可达。live config SHA256 更新前后完全相同 `1fafdaefdba3f422ff5266371861647bb053b69f97e3831c00b9a2eceded3399`；自动控制 / Codex / Clash 均 false，隧道恢复仍 true。未重启 ChatGPT、Codex、Shadowrocket。
 - 未完成的验证：本轮 App 菜单点击/截图检查未能通过授权远程 UI 工具执行；不能宣称视觉验收完成。当前无新近本机 CUA 工具调用，所以时间线没有新 `computer_use_invocation` 事件属正确行为；必须由用户一次真正的本机 Codex CUA 操作验证 E2E，云端 CU 仍可能完全不可观测。不能用人工模拟 JSON 作为生产验收。
+
+## 2026-10-28 10:30+ CST · Shadowrocket 故障转移取证（不动生产代理）
+
+- Mac-mini.local 实机 Guardian / Codex SQLite / workflow_timeline / 规则审计交叉核查，详见 `research/shadowrocket-failover-forensics-20261028.md`。04:20 有连续 4 个公共入口探测坏样本约 56.6s + ChatGPT catalog sync 异常 + Codex Remote Control 重连 + 后续出口从 LHR 变 ICN；这仍**不是** native fallback 节点切换的证明。09:24 有 `broken pipe` 一次、数个成功 WebSocket 建连记录，但当时没有公共 GET 失败，不能用单例主动换节点。
+- 10/28 00:00–09:52 Guardian 的全局节点标签 Seattle 05 不变、公开出口却经 FRA/LHR/ICN 等多个地区；09:53 全局标签 Seattle 04、10:21 Seattle 07、10:31 Japan 10；不要将全局标签或出口国家当成真实 OpenAI 单请求选中节点，更不能据此对单节点做排名。
+- 旧 `shadowrocket_rule_audit.json` 仅 10/26 21:51 的结果，核心 OpenAI 目标均为 `PROXY`，当前配置必需重新核验；live `native_group_route_verified=false` 和原生请求读者 OFF。此证据不足支持自动故障转移 / 手动节点推荐。社区 Wiki 指明 Shadowrocket auto `fallback`/「启用回退」是不同路径，后者连接失败 3 次触发且非最小延迟优先，网页：https://github.com/LOWERTOP/Shadowrocket/wiki。
+- 当前代理独立无凭据测试：chatgpt.com/cdn-cgi/trace GET=200、HEAD=403；robots.txt GET/HEAD=200；gstatic generate_204 GET/HEAD=204。不能据此证明 Shadowrocket 后台组用哪种 HTTP 方法，暂不改测试 URL/间隔/自动化开关。
+- 增加 `scripts/shadowrocket_failover_preflight.py` + `tests/test_shadowrocket_failover_preflight.py` 离线只读准入门槛，阻止将 stale/PROXY/global IP 充作 native group/per-node 证据；所有生产进程、系统代理、节点、配置保持不动。验收见最新回归结果；P0 下一步是活动配置的原生「测试规则」现场核验和 group/回退 UI 状态确认。

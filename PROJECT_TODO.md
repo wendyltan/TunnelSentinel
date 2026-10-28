@@ -250,3 +250,12 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [ ] 未来从 Shadowrocket 改为其他代理时验证：系统探测继续可用，`proxy_client` 变 `system_proxy` 或已验证的 `clash`，不误触 Shadowrocket 重连
 - [ ] 对 SOCKS-only / PAC / TUN 的 Codex `.env` 写入做独立兼容性设计；不能推断未获得的代理入口
 - [ ] 请求级路由适配协议统一含 host/process（可选）、node/chain、source、observed_at、TTL、scope，按后端严格验证后前端消费；没有源数据就不显示，不要求用户改代理软件
+
+### 2026-10-28 16:20 · 通用代理耦合审计后续
+
+完整审计：`research/vendor-coupling-audit-20261028.md`。本次只读审计，未修改正在运行的程序；16:18 实际切换到 7890 的通用代理监测正常。
+- [ ] **P0：核实/解决 Shadowrocket 专属掉线重连悖论**：隧道监听消失时 `listener_owner=unverified`，Guardian 降级 `system_proxy`，已启用的专属恢复不会触发；在不放宽所有权保护和不打断当前代理情况下设计隔离验收。用户刚验收的是健康状态 UI，并非实际断线恢复。
+- [ ] **P1：停止默认周期读取 Shadowrocket 私有全局节点偏好**，兼顾节点未知后的菜单提示和安全状态。
+- [ ] **P1：退役历史固定四节点/已删除分组的自动恢复组件常驻轮询**；只有用户明确需要且有可验证的适配器时再重新提供控制。
+- [ ] **P2：Mihomo 适配器从 Clash Verge Rev 专属 `clash-verge.yaml` 发现方式解耦**，只接受用户授权的受限只读入口，保留通用 `system_proxy` 兜底。
+- [ ] **P2：评估 SOCKS/PAC/TUN 的 Codex 环境配置兼容性与对应验收，不凭端口猜测**。

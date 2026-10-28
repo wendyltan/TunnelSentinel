@@ -1112,14 +1112,29 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.ruleAuditRunning = false
-                if let content = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted]) {
-                    let path = self.base.appendingPathComponent("shadowrocket_rule_audit.json")
-                    try? content.write(to: path, options: .atomic)
+                let verified = (report["state"] as? String) == "verified_rule_matches"
+                    && (report["rules"] as? [[String:String]])?.count == 4
+                if verified {
+                    if let content = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted]) {
+                        try? content.write(to: self.base.appendingPathComponent("shadowrocket_rule_audit.json"),
+                                           options: .atomic)
+                    }
+                } else {
+                    // Do not replace the last actual evidence with an empty/partial UI attempt.
+                    let attempt: [String:Any] = [
+                        "source":"shadowrocket_native_rule_tester",
+                        "checked_at":report["checked_at"] ?? Int(Date().timeIntervalSince1970),
+                        "state":report["state"] ?? "unavailable",
+                        "result_count":(report["rules"] as? [[String:String]])?.count ?? 0
+                    ]
+                    if let content = try? JSONSerialization.data(withJSONObject: attempt, options: [.prettyPrinted]) {
+                        try? content.write(to: self.base.appendingPathComponent("shadowrocket_rule_audit_last_attempt.json"),
+                                           options: .atomic)
+                    }
                 }
                 self.refreshDashboard()
-                if (report["state"] as? String) == "tester_unavailable" ||
-                   (report["state"] as? String) == "not_authorized" {
-                    self.showError("Shadowrocket 自带的规则测试界面无法读取。已保持现有代理设置不变。")
+                if !verified {
+                    self.showError("本次 Shadowrocket 规则核验未取得完整结果。没有更改代理规则，也没有覆盖上次有效核验。")
                 }
             }
         }

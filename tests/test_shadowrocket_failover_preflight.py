@@ -25,6 +25,13 @@ class FailoverPreflightTests(unittest.TestCase):
         x=assess(CONFIG,STATUS,dict(AUDIT,checked_at=NOW-601),now=NOW)
         self.assertEqual(x["routing_gate"],"rule_audit_missing_or_stale")
 
+    def test_fresh_but_empty_gui_audit_does_not_claim_rule_mismatch(self):
+        x=assess(CONFIG, STATUS,
+                 dict(AUDIT, state="partial_rule_matches", rules=[]),now=NOW)
+        self.assertEqual(x["routing_gate"],"rule_audit_incomplete_or_unavailable")
+        self.assertFalse(x["audited_rule_match"])
+        self.assertIsNone(x["manual_node_recommendation"])
+
     def test_proxy_policy_does_not_pass_group_gate(self):
         rows=[dict(r,policy="PROXY") for r in AUDIT["rules"]]
         x=assess(CONFIG,STATUS,dict(AUDIT,rules=rows),now=NOW)

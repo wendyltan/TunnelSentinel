@@ -42,3 +42,11 @@ Shadowrocket 文档区分（1）组内 `fallback` 按最近一次测试结果选
 新增只读脚本 `scripts/shadowrocket_failover_preflight.py` 读取现有 status、config、规则审核及守护日志，输出阻塞原因（例如 `rule_audit_missing_or_stale`）与当天采样统计；**不会读取用户会话、节点凭据、Shadowrocket 私有数据库，也不操作代理**。配套单测覆盖旧审核、PROXY 误当组、全局节点误当业务节点、候选证据不足等 fail-closed 逻辑。
 
 **当前结论：** 04:20 的跨层故障确有较强关联，值得优先验证原生故障转移；但截至本次取证，无证据足以证明 Shadowrocket fallback 已在当时选路，也无依据准确命名一个值得手动切换的候选节点。下一步的关键不是再扫延迟，而是当场核验活动规则和实际每请求节点归属。
+
+### 2026-10-28 10:49–11:00 · 三步实机执行补充
+
+1. **真实执行了现有 Mac App“节点 → 核验 Shadowrocket 当前配置规则”**，状态文件写入 `partial_rule_matches`，规则数 0，时间 10:49:58。不是“PROXY 没命中”，而是核验器未可靠进入 Shadowrocket「测试规则」页。随后单窗口截图确认实际仍在 Shadowrocket「首页」，旧版 `prepare()` 误以任何 `AXTextField`（包括首页搜索栏）为测试规则输入。切换前用户当前全局节点不变，系统代理仍由 Shadowrocket 持有。
+2. 进一步 AX 实机读取当前窗口仅显示 0 个完整子元素，macOS Quartz 屏幕合成观察到应用缩略窗口（不同于逻辑 AXWindow 大小）；无法在不强行切换桌面/绕过 TCC/读取私有数据库的情况下完成 fallback 组页面核准。**本轮不声称组类型、全局“启用回退”、测试 URL 或业务路由已验。**
+3. 修改 `menubar/TunnelSentinelShadowrocketAudit.swift`：测试页专属标签 + 非搜索输入框双重门槛；未验证则拒绝输入。修改 `menubar/TunnelSentinelMenu.swift`：仅四条完整真实规则能刷新正式审计，否则写独立 `shadowrocket_rule_audit_last_attempt.json`（仅失败状态、时间、条数）、显示原因，不覆盖有效历史核验。该次旧版已经覆盖 10/26 旧审计，这是已发生的现场操作，不能假称旧详细数据仍在。
+4. 修复 `scripts/shadowrocket_failover_preflight.py` 的条件分支：本次刷新但空结果应为 `rule_audit_incomplete_or_unavailable`，不应误报「已证实规则没有匹配组」。配套回归覆盖空结果。现仍无真实单请求的节点归属、当前完整组成员、可比业务成功；`manual_node_recommendation=null` 是正确的保守结论。
+5. 仍需一次 Shadowrocket 测试规则窗口对四域名完成读取，以及在 GUI 原生只读检查 fallback/全局回退状态；不能通过手动改规则、切节点、读取被 macOS 保护的 App Group 数据代替。对节点推荐只使用实际分流归属 + 业务成功/断流的同源证据，不作“Seattle04/05/07/Japan10 最优”断言。

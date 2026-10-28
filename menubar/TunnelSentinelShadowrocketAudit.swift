@@ -39,22 +39,40 @@ enum ShadowrocketRuleAuditor {
     private static func window(_ app: AXUIElement) -> AXUIElement? {
         (attribute(app, kAXWindowsAttribute as String) as? [AXUIElement])?.first
     }
+    // The Home and Configuration pages contain AXTextField search boxes too.
+    // Only a text field on the rule tester (not an AX search field) may receive a hostname.
+    private static func testerField(_ w: AXUIElement) -> AXUIElement? {
+        // Require a tester-specific visible marker as well as a non-search field.
+        // If Shadowrocket changes the page, fail closed rather than type in Home search.
+        let labels = texts(w)
+        guard labels.contains("测试规则") ||
+              labels.contains(where: { $0.hasPrefix("策略, ") }) else { return nil }
+        return find(w, where: {
+            role($0) == "AXTextField" &&
+            !desc($0).localizedCaseInsensitiveContains("搜索") &&
+            !desc($0).localizedCaseInsensitiveContains("search")
+        })
+    }
     private static func press(_ window: AXUIElement, named: String) -> Bool {
-        guard let button = find(window, where: { desc($0) == named }) else { return false }
-        return AXUIElementPerformAction(button, kAXPressAction as CFString) == .success
+        guard let control = find(window, where: { desc($0) == named }) else { return false }
+        return AXUIElementPerformAction(control, kAXPressAction as CFString) == .success
     }
     private static func prepare(_ app: AXUIElement) -> AXUIElement? {
         guard var w = window(app) else { return nil }
-        if find(w, where: { role($0) == "AXTextField" }) != nil { return w }
-        // These are navigation-only presses, not server/profile selections.
-        if !press(w, named: "配置") { return nil }
+        if testerField(w) != nil { return w }
+        // Navigation-only, never changes the profile, selected server or proxy rules.
+        if press(w, named: "测试规则") {
+            Thread.sleep(forTimeInterval: 0.25)
+            if let next = window(app), testerField(next) != nil { return next }
+        }
+        guard press(w, named: "配置") else { return nil }
         Thread.sleep(forTimeInterval: 0.25)
         guard let next = window(app) else { return nil }
         w = next
-        if find(w, where: { role($0) == "AXTextField" }) != nil { return w }
-        if !press(w, named: "测试规则") { return nil }
+        guard press(w, named: "测试规则") else { return nil }
         Thread.sleep(forTimeInterval: 0.25)
-        return window(app)
+        guard let tester = window(app), testerField(tester) != nil else { return nil }
+        return tester
     }
     static func run() -> [String: Any] {
         let started = Int(Date().timeIntervalSince1970)
@@ -73,8 +91,7 @@ enum ShadowrocketRuleAuditor {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier
         else { return ["source": source, "checked_at": started, "state": "focus_unavailable", "rules": []] }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
-        guard let w = prepare(axApp),
-              let field = find(w, where: { role($0) == "AXTextField" })
+        guard let w = prepare(axApp), let field = testerField(w)
         else { return ["source": source, "checked_at": started, "state": "tester_unavailable", "rules": []] }
         var rows = [[String: String]]()
         for hostname in hostnames {
@@ -98,7 +115,8 @@ enum ShadowrocketRuleAuditor {
                          "rule_type": String(kind.prefix(45)), "selected": String(selected.prefix(90))])
         }
         return ["source": source, "checked_at": Int(Date().timeIntervalSince1970),
-                "state": rows.count == hostnames.count ? "verified_rule_matches" : "partial_rule_matches",
+                "state": rows.count == hostnames.count ? "verified_rule_matches" :
+                         rows.isEmpty ? "no_rule_results" : "partial_rule_matches",
                 "rules": rows, "scope": "configuration_rule_test_not_live_request_capture"]
     }
 }

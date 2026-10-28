@@ -28,15 +28,18 @@ def assess(config, status, audit, *, now=None):
     rows = {x.get("host"): x for x in audit.get("rules", [])
             if isinstance(x, dict) and x.get("host") in NEEDED_HOSTS}
     values = [str(rows.get(h, {}).get("policy") or "") for h in NEEDED_HOSTS]
-    exact_group_match = (audit_fresh and audit.get("state") == "verified_rule_matches"
-                         and len(rows) == len(NEEDED_HOSTS)
-                         and all(v == group for v in values))
+    audit_complete = (audit_fresh and audit.get("state") == "verified_rule_matches"
+                      and len(rows) == len(NEEDED_HOSTS)
+                      and all(values))
+    exact_group_match = bool(audit_complete and all(v == group for v in values))
     if not owner:
         routing = "current_system_proxy_is_not_shadowrocket"
     elif not configured:
         routing = "native_group_not_configured"
     elif not audit_fresh:
         routing = "rule_audit_missing_or_stale"
+    elif not audit_complete:
+        routing = "rule_audit_incomplete_or_unavailable"
     elif not exact_group_match:
         routing = "required_openai_rules_do_not_match_fallback_group"
     else:

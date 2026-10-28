@@ -375,3 +375,9 @@ TunnelSentinel 的基础网络、ChatGPT 公共入口、Codex TLS/匿名 WebSock
 `status.json` 增加 `computer_use_observation`，四轴 `workflow_health.computer_use` 明确区分近期调用、进程在线、无可用记录。观察结果超过 180 秒无新采样就失效；近期调用超过 15 分钟不继续作为当前调用证据。时间线仅记录新近、真实、可去重的本机工具调用完成/失败事件及来源（无私密内容）。
 
 **边界：** 数据源覆盖这台 Mac 上已记录的 Codex CUA 工具调用；ChatGPT 云端 Computer Use、其他浏览器代理、Sky 服务内部的具体鼠标动作，未提供可信本地完成回执时仍无法识别。由人工确认操作达到目标的端到端验收继续待办。Guardian 运行不依赖正在使用 Shadowrocket，遵循当前 macOS 系统代理；不触碰订阅、节点、ChatGPT/Codex 进程或自动切换设置。
+
+### 2026-10-28 · Shadowrocket 规则审核安全门槛（菜单 App v1.6.3）
+
+原生审核必须在 Shadowrocket 的「测试规则」页对四个固定 OpenAI 域名读取完整策略。首页和配置的 `AXTextField` 搜索栏不再被视为规则测试输入；测试页面不可访问、只有部分结果或主窗口不可访问时 fail-closed，不触碰当前代理/组/节点。此时仅更新 `shadowrocket_rule_audit_last_attempt.json`（时间、状态、条数，无隐私内容），保留上次真实完整 `shadowrocket_rule_audit.json` 不被覆盖；旧结果仍受 600 秒 TTL 保护。已知 Cloud Computer Use 和 Shadowrocket 受保护请求日志不作为通用业务成功来源。
+
+本次 10/28 实机旧版核验得零行，已修正代码并安装，但新的四域名 E2E 结果尚未取得，不能判 Shadowrocket native fallback 已生效。诊断脚本 `scripts/shadowrocket_failover_preflight.py` 对空结果返回不完整、对过期结果返回超时、对新鲜完整且确实命中其他组才可返回错组；三种故障根因必须区分。原生全局「启用回退」、自动检测方法/URL、具体每次请求选节点未被授权稳定读到时，保持自动节点控制关闭和手动候选推荐空值。

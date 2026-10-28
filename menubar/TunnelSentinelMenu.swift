@@ -201,6 +201,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     private var timelineVisibleIDs: [String] = []
     private var ruleAuditRunning = false
     private var configUpdateBusy = false
+    private var codexProxyEnvBusy = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -447,8 +448,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     }
 
     private func refreshNode() {
-        // Native fallback owns OpenAI routing. Guardian already provides the
-        // separately labelled *global* selection in status.json. Avoid a
+        // Current system route is independent of any deleted historical proxy group.
+        // Guardian provides the separately labelled *global* selection in status.json. Avoid a
         // redundant cross-App protected-preferences read from this menu app:
         // macOS may show a broad "access data from other apps" TCC prompt.
         guard snapshot.proxyClient == "shadowrocket" else {
@@ -939,6 +940,99 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         alert.informativeText = text
         alert.alertStyle = .warning
         alert.runModal()
+    }
+
+    // One-shot Codex/Work environment action. Independent of proxy groups and
+    // of Guardian's node/automatic failover; never restarts ChatGPT or Codex.
+    private func codexProxyEnvStatus() -> String {
+        let path = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/.env")
+        guard let raw = try? String(contentsOf: path, encoding: .utf8) else {
+            return "未配置"
+        }
+        guard raw.contains("# >>> CHATGPT_PROXY_MANAGED_BEGIN >>>"),
+              raw.contains("# <<< CHATGPT_PROXY_MANAGED_END <<<") else {
+            return "未托管"
+        }
+        let port = raw.components(separatedBy: "\n").first(where: {
+            $0.hasPrefix("HTTP_PROXY=")
+        })?.replacingOccurrences(of: "HTTP_PROXY=", with: "")
+          .replacingOccurrences(of: "\"", with: "") ?? ""
+        guard port.hasPrefix("http://127.0.0.1:") else { return "配置待核实" }
+        let current = "http://" + snapshot.systemProxyEndpoint
+        return current == port ? "已同步 · " + port.replacingOccurrences(of: "http://", with: "")
+            : "待同步 · " + port.replacingOccurrences(of: "http://", with: "")
+    }
+
+    @objc private func syncCodexProxyEnv(_ sender: NSButton) {
+        guard !codexProxyEnvBusy else { return }
+        let alert = NSAlert()
+        alert.messageText = "同步 Codex 代理入口"
+        alert.informativeText = "只把当前 macOS 正在使用、通过 HTTPS 公开检测的本机 HTTP 代理写入 ~/.codex/.env。先备份，再更新托管区块；不改系统代理、不切节点、不重启 ChatGPT。新进程需完全退出重开才会使用新的环境。"
+        alert.addButton(withTitle: "检测并同步")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        runCodexProxyEnvAction("sync")
+    }
+
+    @objc private func rollbackCodexProxyEnv(_ sender: NSButton) {
+        guard !codexProxyEnvBusy else { return }
+        let alert = NSAlert()
+        alert.messageText = "撤销 Codex 托管代理设置"
+        alert.informativeText = "仅移除桌面脚本与 TunnelSentinel 共同管理的代理区块。不会删除其他 .env 内容；也不会关闭正在运行的 ChatGPT 或更改系统代理。"
+        alert.addButton(withTitle: "撤销托管配置")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        runCodexProxyEnvAction("rollback")
+    }
+
+    private func runCodexProxyEnvAction(_ action: String) {
+        guard action == "sync" || action == "rollback" else { return }
+        let script = base.appendingPathComponent("codex_proxy_env.py")
+        guard FileManager.default.fileExists(atPath: script.path) else {
+            showError("找不到随 TunnelSentinel 安装的 Codex 代理入口工具。")
+            return
+        }
+        codexProxyEnvBusy = true
+        refreshDashboard()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            process.arguments = [script.path, action]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = Pipe()
+            var code: Int32 = -1
+            var response = ""
+            do {
+                try process.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                code = process.terminationStatus
+                response = String(decoding: data, as: UTF8.self)
+            } catch { response = error.localizedDescription }
+            let parsed = (try? JSONSerialization.jsonObject(with: Data(response.utf8))) as? [String:Any]
+            let result = parsed?["state"] as? String ?? ""
+            let reason = parsed?["reason"] as? String ?? ""
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.codexProxyEnvBusy = false
+                self.refreshDashboard()
+                if code != 0 || result == "refused" || result.isEmpty {
+                    self.showError(reason.isEmpty ? "代理入口操作未完成，已保持原配置。" : reason)
+                    return
+                }
+                let notice = NSAlert()
+                notice.messageText = action == "sync" ? "Codex 代理入口已处理" : "托管配置已撤销"
+                notice.informativeText = action == "sync"
+                    ? (result == "unchanged" ? "当前入口已一致，无需重写 .env。" :
+                       "已更新并备份 .env。请在合适时完全退出并重新打开 ChatGPT/Codex，当前会话不会被中断。")
+                    : (result == "not_managed" ? "没有发现可撤销的托管区块。" :
+                       "已保留 .env 的其他内容。需要完全退出并重新打开客户端才会使用新环境。")
+                notice.addButton(withTitle: "知道了")
+                notice.runModal()
+            }
+        }
     }
 
     @objc private func toggleGuardian() {
@@ -1779,6 +1873,28 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                              value: "\(issue.count) 条", tone: .systemOrange, in: doc, y: &y)
             }
         default:
+            dashboardHeading("Codex / Work 代理入口", in: doc, y: &y)
+            dashboardRow("运行环境代理", explanation: "~/.codex/.env · 与桌面 .command 脚本兼容",
+                         value: codexProxyEnvStatus(), in: doc, y: &y)
+            dashboardRow("当前 macOS 代理", explanation: "仅同步实际系统 HTTP 代理，不盲扫其他代理端口",
+                         value: snapshot.systemProxyEndpoint.isEmpty ? "尚未识别" : snapshot.systemProxyEndpoint,
+                         in: doc, y: &y)
+            let syncButton = NSButton(frame: NSRect(x: 4, y: y, width: 246, height: 31))
+            syncButton.title = codexProxyEnvBusy ? "代理配置操作中…" : "检测并同步当前代理"
+            syncButton.bezelStyle = .rounded
+            syncButton.isEnabled = !codexProxyEnvBusy
+            syncButton.target = self
+            syncButton.action = #selector(syncCodexProxyEnv(_:))
+            doc.addSubview(syncButton)
+            let undoButton = NSButton(frame: NSRect(x: 272, y: y, width: 246, height: 31))
+            undoButton.title = "撤销托管配置"
+            undoButton.bezelStyle = .rounded
+            undoButton.isEnabled = !codexProxyEnvBusy
+            undoButton.target = self
+            undoButton.action = #selector(rollbackCodexProxyEnv(_:))
+            doc.addSubview(undoButton)
+            y += 45
+            dashboardNote("写入仅在手动确认后执行；现有 ChatGPT 会话不被中断。更改后请在合适时完全退出重开客户端。", in: doc, y: &y)
             dashboardHeading("自动化安全设置", in: doc, y: &y)
             dashboardSwitch("自动节点控制", description: autoSwitchSupported ? "仅允许已验证的 GPT 独立分组" : "Shadowrocket 当前组无法证实，不开放自动切换",
                             isOn: snapshot.automaticControlEnabled,
@@ -1893,13 +2009,11 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         let dlg=NSAlert()
         dlg.messageText="Shadowrocket 自动节点控制未开放"
         dlg.informativeText="""
-            当前只确认系统代理由 Shadowrocket 提供，没有可靠证据证明
-            ChatGPT 规则使用历史 OpenAI-Resilience 分组。
-            原分组控制依赖固定节点名称和可访问的图形编辑页；
-            Mac 锁屏、换机场订阅、分组界面关闭时未通过稳定性验收。
+            当前只确认系统代理由 Shadowrocket 提供，没有可靠证据能证明
+            单次 ChatGPT / Codex 请求的实际节点与原生回退动作。
 
-            为避免误修改代理规则，这个版本保持只读，无法从菜单直接启用
-            Shadowrocket 分组级自动切换。可继续使用基础健康检测及诊断日志。
+            因此不通过历史节点名称猜测，也不自动修改已删除的分组。
+            可继续使用基础健康检测、Codex 代理入口同步和诊断日志。
             """
         dlg.addButton(withTitle:"知道了")
         dlg.runModal()

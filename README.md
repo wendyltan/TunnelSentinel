@@ -381,3 +381,13 @@ TunnelSentinel 的基础网络、ChatGPT 公共入口、Codex TLS/匿名 WebSock
 原生审核必须在 Shadowrocket 的「测试规则」页对四个固定 OpenAI 域名读取完整策略。首页和配置的 `AXTextField` 搜索栏不再被视为规则测试输入；测试页面不可访问、只有部分结果或主窗口不可访问时 fail-closed，不触碰当前代理/组/节点。此时仅更新 `shadowrocket_rule_audit_last_attempt.json`（时间、状态、条数，无隐私内容），保留上次真实完整 `shadowrocket_rule_audit.json` 不被覆盖；旧结果仍受 600 秒 TTL 保护。已知 Cloud Computer Use 和 Shadowrocket 受保护请求日志不作为通用业务成功来源。
 
 本次 10/28 实机旧版核验得零行，已修正代码并安装，但新的四域名 E2E 结果尚未取得，不能判 Shadowrocket native fallback 已生效。诊断脚本 `scripts/shadowrocket_failover_preflight.py` 对空结果返回不完整、对过期结果返回超时、对新鲜完整且确实命中其他组才可返回错组；三种故障根因必须区分。原生全局「启用回退」、自动检测方法/URL、具体每次请求选节点未被授权稳定读到时，保持自动节点控制关闭和手动候选推荐空值。
+
+### v1.6.4 · ChatGPT / Codex 代理入口同步（2026-10-28）
+
+监控中心 → **设置 → Codex / Work 代理入口** 可只读看到 `~/.codex/.env` 的托管代理端口，以及 macOS 当前系统代理；两按钮：「检测并同步当前代理」和「撤销托管配置」。
+
+仅用户点击并确认才写入，使用新 `codex_proxy_env.py`，同桌面 `ChatGPT代理切换更新.command` / `ChatGPT代理一键回退.command` 的旧托管标记完全兼容。同步只使用当前系统明示的 `127.0.0.1` HTTP/Mixed 代理，不依赖任何代理组，也不会盲选其他服务商端口；候选必须通过 ChatGPT `robots.txt` 的公开 HTTPS 200 检测。系统代理非 HTTP/未识别、端口无响应、旧 .env 存在非托管代理变量/符号链接/标记冲突时安全拒绝。真正发生写入前备份到 `~/.codex/proxy-env-backups/` 并用原子替换；当前配置已一致则**不写入、不需要探测**。回退时也会先备份，移除旧桌面脚本和本 App 共同托管的配置块，保留其他键。
+
+无定时自动改写、无 TUN/代理内核操作、无全局节点切换、无登录 Cookie/Token、无强制重启当前 ChatGPT。已运行的进程可能直到完全退出重新启动才读到新环境。此功能改善的是 Codex/Work 子系统的显式代理入口，**不能证明普通 ChatGPT、Computer Use 云端工具均经此入口，也不能把公共入口 200 宣称为业务成功**。用户已有生效配置与两份桌面回退脚本保持不变。
+
+验收必须**在用户对话中**附可勾选步骤，包含设置页状态、点击同步后成功/不变、真实 Codex 工作流、回退演练建议（只在可中断会话时）、保证其他代理和配置不变。README/TODO 不代替对话内清单。

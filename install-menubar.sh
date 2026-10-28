@@ -21,6 +21,10 @@ mkdir -p "$staged_app/Contents/MacOS" "$staged_app/Contents/Resources"
     "$project_dir/menubar/TunnelSentinelRecovery.swift" \
     "$project_dir/menubar/TunnelSentinelShadowrocketAudit.swift" \
     -o "$staged_app/Contents/MacOS/TunnelSentinelMenu"
+# Stage the opt-in Codex environment helper alongside the signed menu.
+# It is never invoked automatically at launch or by the Guardian.
+/bin/cp "$project_dir/scripts/codex_proxy_env.py" "$build_dir/codex_proxy_env.py"
+/bin/cp "$project_dir/scripts/system_proxy_observer.py" "$build_dir/system_proxy_observer.py"
 /bin/cp "$project_dir/branding/AppIcon.icns" "$staged_app/Contents/Resources/AppIcon.icns"
 /bin/cp "$project_dir/branding/MenuBarTemplate.png" "$staged_app/Contents/Resources/MenuBarTemplate.png"
 
@@ -37,8 +41,8 @@ info={
  "CFBundleName":"TunnelSentinel",
  "CFBundleDisplayName":"TunnelSentinel",
  "CFBundlePackageType":"APPL",
- "CFBundleShortVersionString":"1.6.3",
- "CFBundleVersion":"19",
+ "CFBundleShortVersionString":"1.6.4",
+ "CFBundleVersion":"20",
  "CFBundleIconFile":"AppIcon",
  "LSMinimumSystemVersion":"13.0",
  "LSUIElement":True,
@@ -76,6 +80,9 @@ if [[ -d "$app" ]]; then
     /bin/mv "$app" "$backup_dir/prior-TunnelSentinel.app"
 fi
 /bin/mv "$staged_app" "$app"
+/bin/cp "$build_dir/codex_proxy_env.py" "$install_dir/codex_proxy_env.py"
+/bin/cp "$build_dir/system_proxy_observer.py" "$install_dir/system_proxy_observer.py"
+/bin/chmod 700 "$install_dir/codex_proxy_env.py" "$install_dir/system_proxy_observer.py"
 /bin/cp "$build_dir/agent.plist" "$agent_path"
 /bin/chmod 644 "$agent_path"
 if ! /bin/launchctl bootstrap "gui/$UID" "$agent_path"; then

@@ -47,3 +47,7 @@
 
 
 25. **SINGLE APP RULE (2026-10-25):** user explicitly wants ONE macOS GUI app, `~/Applications/TunnelSentinel.app`. The former `TunnelSentinelRouteController.app` was archived (not active) and the separate Python `com.wuwendi.tunnelsentinel-autofailover` LaunchAgent was removed. **Never reinstall either**. Native AX group operations live in `menubar/TunnelSentinelNativeRoute.swift`, and Codex-triggered single-owner recovery lives in `menubar/TunnelSentinelRecovery.swift`; both are compiled into `TunnelSentinelMenu` using `install-menubar.sh`. Python Guardian remains as non-GUI read-only diagnostic background service, without AX permissions. The only intended macOS Accessibility grant is to `TunnelSentinel.app` (stable developer-signed). Current integration has not been authenticated for actual auto business recovery; do not claim success without real native backend and Codex evidence. Respect cold/lockscreen GUI limitations, never forcibly change routes in testing. User-facing menu includes a one-app toggle and status.
+
+26. **用户 2026-10-28 明确纠正：OpenAI-Resilience 代理组已删除**。所有未来监控、代理同步与节点建议以当前实时代理配置为准，绝不可把历史 fallback 组当作仍存在、有效或必须恢复的前提。不要围绕旧组反复规划；遗留开关只是历史配置，不是实际路由证据。对未证实的原生路由保持未知，不改用户的 Shadowrocket 规则。
+
+27. **每次新增、修改或部署用户可见功能，必须在交付的聊天回复中包含可勾选的人工验收清单**（不限于项目文档），清单明确：操作入口→用户动作→可观察的正确结果→异常/回退→是否真正实机验收。不可只给“测试通过”或“自行验证”，不得把单元测试当视觉/业务验收；需要用户实操的部分保持未勾选。在用户正在运行 ChatGPT/Codex/Computer Use 时，不得为验收强制关闭进程。

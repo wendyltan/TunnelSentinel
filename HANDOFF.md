@@ -521,3 +521,19 @@ Production Guardian backup: ~/Library/Application Support/OpenAILinkGuardian/bac
 - 只针对菜单 App 做防误判独立修复：`ShadowrocketRuleAuditor` 仅识别含「测试规则」或实际「策略, 」标记的页及非搜索字段；无法识别时安全返回 unavailable，不再向首页搜索框写入。菜单仅四条完整结果才更新正式规则审计；失败仅写 `shadowrocket_rule_audit_last_attempt.json`（源、时间、状态、条数）并提示，不覆盖有效正式结果。`shadowrocket_failover_preflight.py` 修正：空结果为 `rule_audit_incomplete_or_unavailable`，不误报“已有确切规则不匹配”；新增失败场景单测。
 - 11:01–11:02 安装开发者签名 App v1.6.3，备份 `~/Library/Application Support/OpenAILinkGuardian/backups/branding-20261028-110147`；Guardian/ChatGPT/Codex/Shadowrocket 没有重启。App 及 Guardian 进程运行，App 签名核验通过，live config SHA256 保持 `1fafdaefdba3f422ff5266371861647bb053b69f97e3831c00b9a2eceded3399`。系统代理仍 Shadowrocket 127.0.0.1:1082，当前全局标签 Japan 10（不是 GPT per-request 证明）；自动节点开关全部 false，隧道重连仍 true。11:02 公众网络 axis OK，`overall_status=attention` 由客户端 `business_status=attention` 引起，网络失败分数为 0；10:54 有 Codex 流异常，10:59 时间线已结束该事故，但整体 attention 可短时保留。不要因此自动改节点。
 - 回归：Python 199/199 PASS、Swift typecheck PASS、Git diff --check PASS。**尚未实际完成新版本规则测试端到端核验**，因为 Shadowrocket 当前测试页/窗口的实时可读性未恢复；原生组类型、全局「启用回退」、测试方法/URL、逐请求 backend 依然未能确认，因此真正的手动最佳节点名单仍为空。后续需要用户让 Shadowrocket「配置→测试规则」窗口保持显示、供现有有权限的 App 审核；无法获取可比候选之前不要模拟成功或自动切换。
+
+## 2026-10-28 11:07–11:25 CST · 桌面代理配置纳入 TunnelSentinel
+
+- 用户明确：Shadowrocket 旧 OpenAI-Resilience 组已经被删除，后续**不得再用它作为恢复/节点推断前提**。用户近期发现更新 `~/.codex/.env` 显著改善 ChatGPT/Work 响应；要求原已生效的桌面方案集成 TunnelSentinel，且今后每项新功能必须在对话中提供**可勾选的人手验收清单**，不能仅写 README/TODO。
+- 实机发现 `~/Desktop/ChatGPT代理切换更新.command` 和 `ChatGPT代理一键回退.command`，都使用 `# >>> CHATGPT_PROXY_MANAGED_BEGIN >>>` / `# <<< CHATGPT_PROXY_MANAGED_END <<<` 管理标记；现行 `~/.codex/.env` 由六个代理环境变量组成，值 `http://127.0.0.1:1082`（与当前 Shadowrocket HTTP(S) 系统代理一致），其余代理档位（Clash Verge 7897、Hako 7890）仅供桌面脚本自主检测。桌面脚本**不改系统代理**、**不退出 ChatGPT**；新管理工具与这些标记兼容，桌面脚本原件保留。
+- 实现 `scripts/codex_proxy_env.py`，供菜单 App 的「设置 → Codex / Work 代理入口」调用。手动确认后对 *当前 macOS 明确的本机 HTTP 代理* 作公开 HTTPS 200 探测，再原子更新托管区块；原始 .env 先私有备份；非托管代理键、符号链接、重复标记及无明确本地 HTTP 代理时拒绝。当前 .env 已一致则返回 unchanged，**完全不重写也不做可能误报的公开探测**。手动回退仅移除这套脚本共同的管理块，保留其他配置，操作前备份。不能把 .env 写入成功等同于已登录 ChatGPT/Codex 任务成功；不自动重启客户端、启动 VPN 或切换节点。
+- `menubar/TunnelSentinelMenu.swift` 设置页增加状态、系统代理地址、同步和撤销按钮，点击确认、后台有限时 subprocess、结果提示。此功能与原来历史代理分组、Guardian 路由开关严格隔离。菜单 `install-menubar.sh` 安装 helper 和它依赖的 read-only system_proxy_observer，更新菜单 App v1.6.4。旧桌面一键回退可继续用、双向兼容。
+- 专项 `tests/test_codex_proxy_env.py` 覆盖未配置、兼容旧块、完全回退、保留其他配置、同步不重写、代理冲突、符号链接/不完整块、非法 URL、探测失败和备份。Mac 实机新建临时文件全链路 status→sync→status→rollback→status **全部成功**，用到的真实系统 HTTP 代理为 1082；`~/.codex/.env` SHA256 在测试前后完全保持 `d80c65c95c048198ac590d9ad22cdfafc75a02fe1a8def6d44492ada4dfb59e8`。正式用户 .env 还没有任何写入操作。
+- Swift typecheck PASS，Python 3.14 原环境全项目 210/210 PASS。macOS /usr/bin/python3 下 4 个历史监控测试因解释器/环境差异失败，不能声称该环境全量通过；新增专项测试全部通过。UI/生产安装后还应继续检查 app 版本、签名、读取实际 .env 状态与点击按钮响应，不在已有 ChatGPT/Codex 工作中做强制重启验收。
+
+### v1.6.4 实机部署与界面验收补记（11:16–11:19 CST）
+
+- `./install-menubar.sh` 成功，旧 App 的独立备份：`~/Library/Application Support/OpenAILinkGuardian/backups/branding-20261028-111640`。新 `~/Applications/TunnelSentinel.app` 版本 `1.6.4`；`codesign --verify --strict` PASS；菜单进程上线，Guardian 和 Shadowrocket 未重启。CLI 工具位于安装目录 `codex_proxy_env.py`，系统代理观察器已同路径安装。
+- Mac 原生辅助功能实际选中「设置」页，读到 `Codex / Work 代理入口` 标题、`已同步 · 127.0.0.1:1082` 状态，以及两个真正的 `AXButton`：`检测并同步当前代理` / `撤销托管配置`。**生产 UI 写入/撤销确认按钮未按下**（之后窗口访问性暂失），不能将源码/临时文件 E2E 等同于已证实所有生产 UI 按钮实际执行。需在用户方便时由用户勾选复核。
+- 最终安装后校验：`~/.codex/.env` sha256 `d80c65c95c048198ac590d9ad22cdfafc75a02fe1a8def6d44492ada4dfb59e8`，Guardian live config sha256 `1fafdaefdba3f422ff5266371861647bb053b69f97e3831c00b9a2eceded3399`，桌面两份回退/切换脚本 sha256 均未变化。运行中系统代理 Shadowrocket `127.0.0.1:1082`；Codex CLI 工具 read-only status `synced`。所有原自动节点开关保持关闭。原有 `overall_status=attention` 为独立业务问题，不是同步功能引起；基础 network axis 曾证实 OK。
+- 同时复核社区 openai/codex #30695、#34955，显式环境代理对 Codex app-server/Work 可能有效，但不能证明 ChatGPT Electron Chromium 的所有 HTTP 请求都经过 `.env`；需要用户真实连接稳定性验收，不说“100% 已修复所有断线”。

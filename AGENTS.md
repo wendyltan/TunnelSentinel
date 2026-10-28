@@ -8,6 +8,8 @@
 6. Regression: `/Library/Frameworks/Python.framework/Versions/3.10/bin/python3 -m unittest discover -s tests -q`; UI build: `swiftc -parse-as-library -O -framework AppKit menubar/TunnelSentinelMenu.swift -o /tmp/TunnelSentinelMenu-preview` (preview only). Installation uses `install-menubar.sh` to create/sign `~/Applications/TunnelSentinel.app`, with a stable identifier and `LSUIElement`; keep the previous LaunchAgent and binary backed up.
 7. A passing compiler/test suite does not equal a successful macOS menu usability check. Require real launch status and user visual acceptance.
 
+**UI 信息层级原则：** Avoid unnecessary secondary labels and descriptions. Let the layout do the explaining.（避免不必要的次要标签和描述，让布局本身来传达信息。）菜单栏和监控总览以实际连接状态、重要异常、可执行操作为主，优先使用分组、对齐和留白表达主次；不得因此隐藏真实故障、未验证状态或必要的安全确认。
+
 8. Menu bar branding must be an `NSImage.isTemplate=true` glyph with native system tint (never set text `contentTintColor` to a fixed color). Branded Finder icon comes from the signed app bundle. Use `branding/build-assets.sh` to regenerate bundled assets and keep README image references valid.
 
 9. Recovery contracts (v1.4): only nodes observed healthy in recent guardian checks are candidates; a URL-scheme return code does not prove a node switch. Abort when a selection is unconfirmed, apply bounded retry backoff, never derive failover solely from ChatGPT desktop errors (429/Cloudflare); require fresh public probe success and confirmed selected node. Display recovery_state/recovery_reason to the user.

@@ -1547,13 +1547,22 @@ class Guardian:
         selected=str(route.get("proxy_url","")) if state=="explicit" else ""
         if state=="explicit":
             try:
-                shadow_port=(urlparse(selected).hostname,urlparse(selected).port)==(
-                    urlparse(self.shadowrocket_proxy).hostname,urlparse(self.shadowrocket_proxy).port)
+                same_configured_endpoint = (
+                    urlparse(selected).hostname, urlparse(selected).port
+                ) == (
+                    urlparse(self.shadowrocket_proxy).hostname,
+                    urlparse(self.shadowrocket_proxy).port
+                )
             except ValueError:
-                shadow_port=False
-            if shadow_port:
+                same_configured_endpoint=False
+            # Matching the old configured PORT is not proof of ownership.
+            # Require a real, current listener executable observation.
+            shadow_owner = (
+                same_configured_endpoint and route.get("listener_owner") == "shadowrocket"
+            )
+            if shadow_owner:
                 backend="shadowrocket"
-                selection=self.shadowrocket_proxy
+                selection=selected
                 clash={}
             else:
                 # Probe the existing official controller in read-only mode; it

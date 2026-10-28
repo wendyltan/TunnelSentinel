@@ -28,9 +28,9 @@ class MenuCompactStatusTests(unittest.TestCase):
 
     def test_historic_native_node_is_not_presented_as_current(self):
         card = menu.split('private func menuCard() -> NSView {',1)[1].split('private func menuItem(',1)[0]
-        self.assertIn('let egressTitle = clashMode', card)
-        self.assertIn(': observedEgress', card)
-        self.assertIn('仅监测 · 不自动更换节点',card)
+        self.assertIn('let hasRequestRoute = snapshot.fresh && snapshot.backendVerified',card)
+        self.assertIn('hasRequestRoute ? snapshot.actualBackendName : observedEgress',card)
+        self.assertIn('只读监测 · 不自动换节点',card)
         self.assertNotIn('GPT 分组节点 · 暂无近期读取',card)
         self.assertNotIn('snapshot.nativeGroupUINode',card)
         self.assertNotIn('snapshot.backendLastLoggedName',card)

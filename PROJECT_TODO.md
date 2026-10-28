@@ -240,3 +240,13 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [x] 移除常驻灰色的自动节点开关，取消菜单对受保护 Shadowrocket 偏好重复读；清理已删除分组的两项 live Guardian 历史标志，独立备份并验证系统代理仍可达
 - [ ] UI 用户实测：三标签导航、总览滚动的连接路径与真实节点未知、记录时间线和真实客户端指标、设置同步/回退按钮、菜单栏剩一个有实际作用的隧道重连开关；确保无旧分组与失效核验入口
 - [ ] 如果未来要真正显示「ChatGPT 实际节点」，必须先取得支持且授权的 per-request 路由来源；不得凭公网 trace 地区、全局节点名或 Codex .env 端口猜测
+
+### 2026-10-28 · 通用代理监控（代理可随时更换）
+
+- [x] 只读检查 Codex 真实 SQLite 的 6000 条近期元数据，确认有连接/HTTP/WS 错误但没有可靠的机场上游节点/路由链；不显示「未知节点」占位
+- [x] 修复端口复用风险：通过实时监听进程核准 Shadowrocket 所有权，不能仅凭旧配置 `1082` 判断；失去归属则降级通用系统代理模式，禁用专属重连
+- [x] UI 仅在请求级路由证据真实且新鲜时显示「最近 OpenAI 请求路由」；菜单/设置的 Shadowrocket 恢复入口仅在确认当前实际由它持有时出现
+- [ ] 人工验收：总览无永久「ChatGPT 实际节点未知」行，系统代理/环境变量/公网出口依然可看；设置页的专属重连只在所有权确认时显示
+- [ ] 未来从 Shadowrocket 改为其他代理时验证：系统探测继续可用，`proxy_client` 变 `system_proxy` 或已验证的 `clash`，不误触 Shadowrocket 重连
+- [ ] 对 SOCKS-only / PAC / TUN 的 Codex `.env` 写入做独立兼容性设计；不能推断未获得的代理入口
+- [ ] 请求级路由适配协议统一含 host/process（可选）、node/chain、source、observed_at、TTL、scope，按后端严格验证后前端消费；没有源数据就不显示，不要求用户改代理软件

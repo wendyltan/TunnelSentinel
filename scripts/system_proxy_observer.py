@@ -56,13 +56,57 @@ def parse_scutil(text: str) -> dict:
                 "proxy_client": "system_proxy", "proxy_url": ""}
 
 
+def inspect_listener_owner(proxy_url: str) -> str:
+    """Read-only localhost TCP listener process provenance, never port-based guessing.
+
+    Returns 'shadowrocket' only if the actual listener executable belongs to the
+    signed app's normal path; other/unreadable listeners receive no vendor claim.
+    No raw process arguments, remote addresses or PIDs leave this function.
+    """
+    from urllib.parse import urlsplit
+    try:
+        address = urlsplit(proxy_url)
+        if address.hostname not in ("127.0.0.1", "::1", "localhost"):
+            return "unverified"
+        port = address.port
+        if not port or not 1 <= port <= 65535:
+            return "unverified"
+        listing = subprocess.run(
+            ["/usr/sbin/lsof", "-nP", "-sTCP:LISTEN", "-iTCP:" + str(port), "-Fp"],
+            capture_output=True, text=True, check=False, timeout=2)
+        if listing.returncode != 0:
+            return "unverified"
+        pids = [line[1:] for line in listing.stdout.splitlines()
+                if line.startswith("p") and line[1:].isdigit()][:10]
+        found_other = False
+        for pid in pids:
+            item = subprocess.run(["/bin/ps", "-p", pid, "-o", "command="],
+                                  capture_output=True, text=True, check=False, timeout=1)
+            if item.returncode != 0:
+                continue
+            path = item.stdout.strip().split(" ", 1)[0]
+            if "/Shadowrocket.app/Contents/" in path and (
+                path.endswith("/Shadowrocket") or path.endswith("/MacPacketTunnel")
+            ):
+                return "shadowrocket"
+            found_other = True
+        return "other" if found_other else "unverified"
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return "unverified"
+
+
 def inspect() -> dict:
     try:
         p = subprocess.run(["/usr/sbin/scutil", "--proxy"], text=True,
                            capture_output=True, check=False, timeout=3)
         if p.returncode != 0:
             raise OSError("scutil failed")
-        return parse_scutil(p.stdout)
+        observed = parse_scutil(p.stdout)
+        if observed.get("state") == "explicit":
+            observed["listener_owner"] = inspect_listener_owner(
+                observed.get("proxy_url", ""))
+            observed["listener_owner_source"] = "macos_tcp_listener_executable"
+        return observed
     except (OSError, subprocess.TimeoutExpired):
         return {"source": "macos_system_proxy", "state": "unavailable",
                 "proxy_client": "unknown", "proxy_url": ""}

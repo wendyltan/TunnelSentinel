@@ -399,3 +399,11 @@ TunnelSentinel 的基础网络、ChatGPT 公共入口、Codex TLS/匿名 WebSock
 路径只区分证据层级：macOS 当前系统代理监听地址、Codex `~/.codex/.env` 显式入口、Guardian 通过当前代理的匿名 `chatgpt.com/cdn-cgi/trace` 出口 IP/地区、真实 ChatGPT 单次请求的节点归属（未确认）。**同一 127.0.0.1 入口不证明 ChatGPT 实际业务经过同一远端代理节点/出口 IP；公开 GET 200 不代表登录、WebSocket、任务成功。**
 
 旧 OpenAI-Resilience 组已由用户删除；live Guardian 历史状态 `native_fallback_enabled=true` 和 `native_fallback_group` 已在备份后清理，仅调整这两项并重启 Guardian，不触碰 Shadowrocket、ChatGPT、Codex、`~/.codex/.env`、`tunnel_recovery_enabled`。菜单 App 不再尝试读取 Shadowrocket 受保护偏好来猜测节点，不会引发额外的 TCC 权限提示。所有新增 UI 必须在交付聊天中提供勾选式人工验收清单。
+
+### 1.6.6 · 与代理品牌解耦、证据条件显示（2026-10-28）
+
+- **通用层**：macOS `scutil --proxy` 获取当前 HTTPS 系统代理；`system_proxy_observer.py` 只读 `lsof/ps` 对当前本机监听进程核准来源（`listener_owner` 为 `shadowrocket` / `other` / `unverified`），不是订阅或出口节点；公开 Trace 测试仅证明抽样请求的出口 IP/可达性；Codex SQLite 实际日志提供 HTTP/WS/错误及时间；Computer Use 控制/本机调用证据独立于代理品牌。
+- **接口边界**：Guardian 不能再仅因 `127.0.0.1:1082` 与历史 Shadowrocket 配置一致就认定 Shadowrocket。只有实时监听进程属 Shadowrocket 才开放专属隧道重连；进程不可读、另一客户端复用端口时降级通用 `system_proxy`，继续健康探测并**不允许专属重连**。Mihomo 当前专用活动连接适配器仍依赖官方 API 的明确、可比对的代理 URL 与活跃连接链；不修改规则/路由。
+- **节点证据**：Codex 客户端日志不会提供最终机场节点或请求代理链（本机 2026-10-28 最近 6,000 条元数据检查未见可确认字段）；`lsof` 当前连接最多证明客户端连接本机端口，不能推断远端节点；`chatgpt.com/cdn-cgi/trace` 的 IP 与区域是公共采样而非 ChatGPT 客户端/上游机场节点。主总览彻底移除始终未知的节点占位行；只有 `openai_group_backend_verified=true` 且有明确名称/时间、数据仍新鲜时，**条件显示「最近 OpenAI 请求路由」**。说明这是 OpenAI 域名连接记录，不一定来自 ChatGPT 桌面 App，也不代表后续请求持续使用同一节点。
+- **可选层**：Mihomo `GET /connections` 的请求代理链，或用户单独授权的其他客户端连接记录，均可实现并行适配器；前端只消费一致的名称、来源、时间、TTL、证据范围。Shadowrocket 的受保护日志读取器保持关闭；不要为了显示节点而要求全盘读取私有 App Group。代理品牌专属恢复开关只有在当前所有者验证通过时显示。不同代理的专属功能缺失不应阻断通用监测。
+- **已知待完善**：`codex_proxy_env.py` 目前只接受明确的本机 HTTP/Mixed 系统代理，SOCKS-only、PAC、透明 TUN 下拒绝盲同步（不自动猜测端口）；Codex 完整业务成功/Computer Use 云端任务完成仍无法由匿名探测替代；所有真正的自动换节点仍默认关闭。

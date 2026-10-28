@@ -545,3 +545,11 @@ Production Guardian backup: ~/Library/Application Support/OpenAILinkGuardian/bac
 改动：菜单标签由「总览/时间线/诊断/节点/设置」改为「总览/记录/设置」。总览保留四项关键指标、增加四行连接路径与“实际节点暂无法确认”说明；记录保留断线事件及真实本机 Computer Use、Codex 断流与 HTTP 元数据，去掉匿名深层探测墙/其他 AI 站列表；设置保留 .env 入口同步/回退和隧道重连。原生规则核验按钮和 `TunnelSentinelShadowrocketAudit.swift` 从编译删除；一直灰色的自动节点开关在菜单、设置页移除（后台安全默认依旧 OFF）。停止菜单对 Shadowrocket 私有偏好做重复的 `defaults export`，优先显示 Guardian 只读状态。历史业务记录不删除，后台监测不关。
 
 在用户明确称旧组已删除的前提下，**备份后**只将 live Guardian `native_fallback_enabled` 改 false、`native_fallback_group` 改空；备份 `~/Library/Application Support/OpenAILinkGuardian/backups/old-group-cleanup-20261028-125221/config.before.json`。重启 Guardian LaunchAgent 后 12:52:26 状态 `route_management=shadowrocket_global_monitor`、`reachable`，本机代理 `127.0.0.1:1082`。原自动节点开关继续 false、隧道重连 true；原始 `~/.codex/.env` SHA256 `d80c65c95c048198ac590d9ad22cdfafc75a02fe1a8def6d44492ada4dfb59e8`，无改动。全局节点 `Seattle 03` 旧字段无法证实为当前 per-request 节点，UI 不因此给 GPT 节点排名；公网页面出口不能与其比较作为同节点判定。后续开发不要恢复旧组/旧核验入口。
+
+## 2026-10-28 13:05–13:20 CST · 通用代理架构核验、端口同号误识别修复
+
+用户明确反对 TunnelSentinel 绑定 Shadowrocket，要求尤其从 Codex 日志探索是否能识别节点，并能更换代理软件。Web 核验 OpenAI app-server 文档及 Mihomo 官方 API：Codex 日志可以提供真实 WS、HTTP、错误与连接时间，但本身没有订阅上游节点；Mihomo 官方只读 `GET /connections` 提供请求级 `chains/providerChains/rule`；常规 `lsof` 也只能提供本机 socket，不会给机场节点。对 Mac 上 `~/.codex/logs_2.sqlite` 的最近 6000 条（只读、脱敏、只输出目标统计）实测：6000 条含 Codex HTTP/WS 错误及代理文字，**零条能可靠解释为上游节点/最终代理链字段**。两次短时 `lsof` 抽样未发现活跃 Codex sockets，不代表 Codex 不使用代理。
+
+审查发现实际风险：`Guardian.refresh_active_backend` 把当前 macOS 端口与 `shadowrocket_proxy` 旧端口相等视为 Shadowrocket，占用同端口的其他软件可能被误识别、触发不相干的 Shadowrocket 隧道重连。现在 `scripts/system_proxy_observer.py` 增加有界 `lsof -sTCP:LISTEN` + `ps` 只读查询本机当前端口监听进程，输出 `listener_owner=shadowrocket/other/unverified`，不外泄 PID/其他进程命令行或浏览域名。确认 `MacPacketTunnel` 二进制确属 `/Applications/Shadowrocket.app/Contents/` 才标注拥有者；未确认立刻降级通用系统代理（含 Shadowrocket 专属恢复关闭）。实机读到当前 1082 确属 Shadowrocket；测试复用端口被其他进程与权限未知时都 fail closed，不依赖订阅/固定节点名。
+
+UI v1.6.6：删除永远「未知」的 ChatGPT 实际节点总览占位行；只有后端提供有效、带时间、当前新鲜的逐请求代理链证据时才呈现「最近 OpenAI 请求路由」（不保证来自 ChatGPT App）；菜单紧凑卡优先呈现公共出口采样，不把它叫「GPT 实际节点」；仅验证由 Shadowrocket 持有当前监听端口才显示「Shadowrocket 隧道重连」，其他客户端只保留通用健康与 Codex/Work `.env` 操作。未修改任何 Shadowrocket 路由/订阅，不打开代理日志，不要求系统广泛 App 数据权限；现有自动节点控制继续关闭。仍需人工验收设置 UI、不同软件复用原端口时的通用降级，且不强制切换用户正在使用的好用链路。

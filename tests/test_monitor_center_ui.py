@@ -8,7 +8,7 @@ class MonitorCenterTests(unittest.TestCase):
   self.assertIn('打开监控中心…',menu)
   self.assertIn('立即检测基础链路',menu)
   self.assertNotIn('switchMenuRow("自动节点控制"',menu)
-  self.assertIn('switchMenuRow("隧道掉线重连"',menu)
+  self.assertIn('switchMenuRow("Shadowrocket 隧道重连"',menu)
   self.assertNotIn('GPT 分组节点 · 暂无近期读取',menu)
   self.assertNotIn('分组未核实（不可用）',menu)
   self.assertNotIn('查看 GPT 节点状态与事件',menu)
@@ -22,7 +22,8 @@ class MonitorCenterTests(unittest.TestCase):
  def test_dashboard_is_distinct_and_confidence_labelled(self):
   self.assertIn('NSSegmentedControl(labels: ["总览", "记录", "设置"]',s)
   self.assertIn('DashboardFlippedView(',s)
-  self.assertIn('ChatGPT 实际节点", value: "暂无法确认',s)
+  self.assertNotIn('dashboardCompactRow("ChatGPT 实际节点"',s)
+  self.assertIn('if snapshot.fresh && snapshot.backendVerified',s)
   self.assertIn('公开测试请求出口',s)
   self.assertNotIn('核验 Shadowrocket 当前配置规则',s)
   self.assertNotIn('dashboardProbe(_:)',s)

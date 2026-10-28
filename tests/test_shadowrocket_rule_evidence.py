@@ -26,8 +26,10 @@ class SimplifiedDashboardTests(unittest.TestCase):
         self.assertIn('dashboardCompactRow("macOS 代理入口"', MENU)
         self.assertIn('dashboardCompactRow("Codex / Work 入口"', MENU)
         self.assertIn('dashboardCompactRow("公开测试请求出口"', MENU)
-        self.assertIn('dashboardCompactRow("ChatGPT 实际节点", value: "暂无法确认"', MENU)
-        self.assertIn("同一个本机代理入口不代表最终公网出口相同", MENU)
+        self.assertNotIn('dashboardCompactRow("ChatGPT 实际节点"', MENU)
+        self.assertIn('最近 OpenAI 请求路由', MENU)
+        self.assertIn("if snapshot.fresh && snapshot.backendVerified", MENU)
+        self.assertIn("最近 OpenAI 请求路由", MENU)
 
     def test_record_retains_real_client_evidence(self):
         for term in ('dashboardHeading("连接故障与恢复"',

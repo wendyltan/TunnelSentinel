@@ -16,7 +16,7 @@ class MonitorV4Tests(unittest.TestCase):
   self.assertNotIn('核验 Shadowrocket 当前配置规则',S)
   self.assertNotIn('auditShadowrocketRules(_:)',S)
   self.assertIn('当前连接路径',S)
-  self.assertIn('ChatGPT 实际节点',S)
+  self.assertIn('最近 OpenAI 请求路由',S)
  def test_flat_overview_four_values_in_one_panel(self):
   self.assertIn('let panel = AppearanceFillView(',S)
   self.assertIn('x: 0, y: 84, in: panel',S)

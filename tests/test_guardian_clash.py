@@ -67,10 +67,34 @@ class GuardianClashTests(unittest.TestCase):
             obj=self.service(tmp);obj.active_backend='clash';obj.config['proxy']='http://127.0.0.1:7897'
             with mock.patch.object(obj,'_inspect_system_route',
                         return_value={'source':'macos_system_proxy','state':'explicit',
-                                      'proxy_url':'http://127.0.0.1:1082','endpoint':'127.0.0.1:1082'}), \
+                                      'proxy_url':'http://127.0.0.1:1082','endpoint':'127.0.0.1:1082',
+                                      'listener_owner':'shadowrocket'}), \
                  mock.patch.object(obj,'_inspect_mihomo',side_effect=AssertionError('no need')):
                 obj.refresh_active_backend()
             self.assertEqual(obj.active_backend,'shadowrocket')
             self.assertEqual(obj.config['proxy'],'http://127.0.0.1:1082')
+
+    def test_other_proxy_reusing_old_shadowrocket_port_is_generic_and_never_restarts_shadowrocket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            obj=self.service(tmp)
+            with mock.patch.object(obj,'_inspect_system_route',
+                       return_value={'source':'macos_system_proxy','state':'explicit',
+                                     'proxy_url':'http://127.0.0.1:1082','endpoint':'127.0.0.1:1082',
+                                     'listener_owner':'other'}), \
+                 mock.patch.object(obj,'_inspect_mihomo',return_value={}):
+                obj.refresh_active_backend()
+            self.assertEqual(obj.active_backend,'system_proxy')
+            self.assertEqual(obj.config['proxy'],'http://127.0.0.1:1082')
+            self.assertFalse(obj.current_node_verified)
+
+    def test_unknown_listener_provenance_on_old_port_is_generic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            obj=self.service(tmp)
+            with mock.patch.object(obj,'_inspect_system_route',
+                       return_value={'source':'macos_system_proxy','state':'explicit',
+                                     'proxy_url':'http://127.0.0.1:1082','endpoint':'127.0.0.1:1082'}), \
+                 mock.patch.object(obj,'_inspect_mihomo',return_value={}):
+                obj.refresh_active_backend()
+            self.assertEqual(obj.active_backend,'system_proxy')
 
 if __name__=='__main__':unittest.main()

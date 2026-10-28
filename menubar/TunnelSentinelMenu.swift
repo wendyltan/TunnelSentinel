@@ -61,6 +61,7 @@ private struct Snapshot {
     var actualBackendName = ""
     var backendVerified = false
     var backendObservedAt = ""
+    var backendEvidenceSource = ""
     var backendLastLoggedName = ""
     var backendLastLoggedAt = ""
     var nativeGroupUINode = ""
@@ -215,7 +216,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
            let brandIcon = NSImage(contentsOf: url) {
             NSApp.applicationIconImage = brandIcon
         }
-        statusItem.button?.toolTip = "TunnelSentinel · Shadowrocket / ChatGPT"
+        statusItem.button?.toolTip = "TunnelSentinel · ChatGPT / Codex 网络监控"
         refreshStatus()
         refreshNode()
         // In-process auto-recovery: no second App, no external AX helper.
@@ -367,6 +368,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         next.actualBackendName = values["openai_group_backend_name"] as? String ?? ""
         next.backendVerified = values["openai_group_backend_verified"] as? Bool ?? false
         next.backendObservedAt = values["openai_group_backend_observed_at"] as? String ?? ""
+        next.backendEvidenceSource = values["openai_group_backend_source"] as? String ?? ""
         next.nativeProxyLogEnabled = values["native_proxy_log_reader_enabled"] as? Bool ?? false
         next.nativeProxyLogRecent = values["native_proxy_log_recent"] as? Bool ?? false
         if let last = values["native_proxy_last_connection"] as? [String: Any],
@@ -667,27 +669,22 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
 
         let nodeBox = AppearanceFillView(frame: NSRect(x: 18, y: 114, width: w - 36, height: 106),
                                          color: .clear, cornerRadius: 10, surface: .menu)
-        let clashMode = snapshot.routeManagement == "clash_observe_only"
-        let backendSource = clashMode ? "GPT 实际请求节点 · Clash 本地 API" :
-            snapshot.fresh && snapshot.networkHealthy && snapshot.egressObserved
-            ? "GPT 实测出口 · 周期探测" : "GPT 出口 · 待确认"
-        nodeBox.addSubview(label(backendSource,
+        let hasRequestRoute = snapshot.fresh && snapshot.backendVerified &&
+            !snapshot.actualBackendName.isEmpty && !snapshot.backendObservedAt.isEmpty
+        nodeBox.addSubview(label(hasRequestRoute ? "最近 OpenAI 路由记录" : "公开测试请求出口",
                                 font: .systemFont(ofSize: 10, weight: .medium),
                                 color: .secondaryLabelColor,
                                 frame: NSRect(x: 12, y: 84, width: nodeBox.bounds.width - 24, height: 15)))
-        let egressTitle = clashMode
-            ? (snapshot.backendVerified ? snapshot.actualBackendName : "当前请求节点未确认")
-            : observedEgress
-        nodeBox.addSubview(label(egressTitle,
+        nodeBox.addSubview(label(hasRequestRoute ? snapshot.actualBackendName : observedEgress,
                                 font: .systemFont(ofSize: 13.5, weight: .semibold),
                                 color: .labelColor,
                                 frame: NSRect(x: 12, y: 57, width: nodeBox.bounds.width - 24, height: 22)))
-        nodeBox.addSubview(label(clashMode ? "GPT 公共出口 · 周期探测" : "安全模式 · 控制状态",
+        nodeBox.addSubview(label(hasRequestRoute ? "公开测试请求出口" : "节点控制",
                                 font: .systemFont(ofSize: 10, weight: .medium),
                                 color: .secondaryLabelColor,
                                 frame: NSRect(x: 12, y: 35, width: nodeBox.bounds.width - 24, height: 15)))
-        nodeBox.addSubview(label(clashMode ? observedEgress :
-                                 snapshot.automaticControlEnabled ? "节点控制允许（需后端另行验证）" : "仅监测 · 不自动更换节点",
+        nodeBox.addSubview(label(hasRequestRoute ? observedEgress :
+                                 snapshot.automaticControlEnabled ? "需独立验证控制能力" : "只读监测 · 不自动换节点",
                                 font: .systemFont(ofSize: 13.5, weight: .semibold),
                                 color: .labelColor,
                                 frame: NSRect(x: 12, y: 9, width: nodeBox.bounds.width - 24, height: 23)))
@@ -725,7 +722,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             ? String(snapshot.checkedAt.dropFirst(11).prefix(8)) : "—"
         let recoveryText = recoveryBlocked && snapshot.recoveryRetrySeconds > 0
             ? " · 恢复重试约 \(snapshot.recoveryRetrySeconds / 60) 分钟后"
-            : (clashMode ? " · Clash API" : " · Shadowrocket")
+            : " · 系统代理监测"
         v.addSubview(label("最近检测 \(timeText)\(recoveryText)",
                            font: .systemFont(ofSize: 10), color: .tertiaryLabelColor,
                            frame: NSRect(x: 20, y: 17, width: w - 40, height: 18)))
@@ -794,21 +791,14 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             && !snapshot.egressCountry.isEmpty ? " · 公网 \(shortEgress)" : ""
         statusItem.button?.title = "\(menuBarStateMarker) \(statusLabel)\(compactEdge)"
         statusItem.button?.contentTintColor = nil
-        let selectedDescription = snapshot.proxyClient != "shadowrocket" &&
-                                  snapshot.routeManagement != "clash_observe_only"
-            ? "当前 macOS 系统代理：\(snapshot.systemProxyEndpoint.isEmpty ? "未解析 / 无显式端口" : snapshot.systemProxyEndpoint)；不能由端口推断机场节点"
-            : snapshot.routeManagement == "clash_observe_only"
-            ? "Clash AI→\(snapshot.clashParent)；最近 GPT 请求节点：\(snapshot.backendVerified ? snapshot.actualBackendName : "未核实")；候选：\(snapshot.clashCandidateCount)"
-            : nativeGroupUIRecent
-            ? "Shadowrocket 分组界面近期选中：\(snapshot.nativeGroupUINode)（仅代表界面读数）"
-            : snapshot.fresh && snapshot.backendVerified
-            ? "GPT 最近请求实际节点：\(snapshot.actualBackendName)（\(snapshot.backendObservedAt)）"
-            : "Shadowrocket 当前 GPT 请求节点未知；仅能观察公共出口。详情见监控中心。"
-        let routeNodeDescription = snapshot.routeManagement == "clash_observe_only"
-            ? "Clash Proxies 当前选中：\(snapshot.clashSelectedNode)"
-            : snapshot.proxyClient == "shadowrocket"
-            ? "Shadowrocket 全局节点：\(globalNode)"
-            : "当前系统出站：\(snapshot.systemProxyEndpoint.isEmpty ? "直连 / TUN 或未解析" : snapshot.systemProxyEndpoint)"
+        let hasRouteEvidence = snapshot.fresh && snapshot.backendVerified &&
+            !snapshot.actualBackendName.isEmpty && !snapshot.backendObservedAt.isEmpty
+        let selectedDescription = hasRouteEvidence
+            ? "最近 OpenAI 域名的请求级路由记录：\(snapshot.actualBackendName)；采样 \(snapshot.backendObservedAt)；来源 \(snapshot.backendEvidenceSource)"
+            : "未获取有效的请求级路由数据；公开测试出口不等于实际客户端代理节点"
+        let owner = snapshot.proxyClient == "shadowrocket" ? "Shadowrocket" :
+                    snapshot.proxyClient == "clash" ? "Mihomo" : "系统"
+        let routeNodeDescription = "macOS 当前代理入口（\(owner)）：\(snapshot.systemProxyEndpoint.isEmpty ? "直连 / TUN 或未解析" : snapshot.systemProxyEndpoint)"
         statusItem.button?.toolTip = "TunnelSentinel · \(statusLabel)\n\(headline)\n\(selectedDescription)\nOpenAI 公共出口：\(observedEgress)\n\(routeNodeDescription)\n\(detail)"
         statusItem.button?.setAccessibilityLabel("TunnelSentinel，\(statusLabel)，OpenAI 出口 \(shortEgress)，\(routeNodeDescription)")
         statusItem.button?.setAccessibilityValue("\(headline)；\(detail)")
@@ -819,12 +809,13 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(menuItem("打开监控中心…", symbol: "rectangle.grid.1x2", action: #selector(openDashboard)))
         menu.addItem(menuItem("立即检测基础链路", symbol: "arrow.clockwise", action: #selector(forceProbe)))
-        menu.addItem(.separator())
-        menu.addItem(switchMenuRow("隧道掉线重连",
-                                   subtitle: snapshot.proxyClient == "shadowrocket" ?
-                                       "Shadowrocket 意外断开时尝试重连" : "其他代理仅监测；不操作 Shadowrocket",
-                                   on: snapshot.tunnelRecoveryEnabled,
-                                   enabled: snapshot.proxyClient == "shadowrocket" && !configUpdateBusy, tag: 2))
+        if snapshot.proxyClient == "shadowrocket" {
+            menu.addItem(.separator())
+            menu.addItem(switchMenuRow("Shadowrocket 隧道重连",
+                                       subtitle: "仅控制已确认由 Shadowrocket 持有的隧道",
+                                       on: snapshot.tunnelRecoveryEnabled,
+                                       enabled: !configUpdateBusy, tag: 2))
+        }
         menu.addItem(.separator())
         menu.addItem(menuItem("退出菜单栏", symbol: "xmark.circle", action: #selector(quitMenu)))
         statusItem.menu = menu
@@ -1501,8 +1492,16 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                 ? snapshot.egressIP + (snapshot.egressCountry.isEmpty ? "" : " · " + snapshot.egressCountry)
                 : "没有有效的公开出口采样"
             dashboardCompactRow("公开测试请求出口", value: edge, in: doc, y: &y)
-            dashboardCompactRow("ChatGPT 实际节点", value: "暂无法确认", in: doc, y: &y)
-            dashboardNote("同一个本机代理入口不代表最终公网出口相同；当前没有 ChatGPT 请求级节点证据。", in: doc, y: &y)
+            // Optional request-level evidence only. No permanent "unknown node"
+            // placeholder, no inferred server from public trace or global choice.
+            if snapshot.fresh && snapshot.backendVerified &&
+               !snapshot.actualBackendName.isEmpty && !snapshot.backendObservedAt.isEmpty {
+                dashboardRow("最近 OpenAI 请求路由",
+                             explanation: "采样时间：" + snapshot.backendObservedAt +
+                                          " · 不代表后续请求的持续选路",
+                             value: snapshot.actualBackendName,
+                             in: doc, y: &y)
+            }
             dashboardHeading("最近一次连接事件", in: doc, y: &y)
             let allEvents = snapshot.workflowTimeline["events"] as? [[String:Any]] ?? []
             let recent = allEvents.filter { ["codex_remote_session","codex_stream_error","client_log_issue","computer_use_invocation"].contains($0["kind"] as? String ?? "") }
@@ -1644,14 +1643,13 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             doc.addSubview(undoButton)
             y += 45
             dashboardNote("写入仅在手动确认后执行；现有 ChatGPT 会话不被中断。更改后请在合适时完全退出重开客户端。", in: doc, y: &y)
-            dashboardHeading("自动化安全设置", in: doc, y: &y)
-            dashboardSwitch("隧道掉线重连", description: snapshot.proxyClient == "shadowrocket" ?
-                            "Shadowrocket 隧道重连；不切换节点" :
-                            "仅 Shadowrocket 可使用；其他代理仍正常接受监测",
-                            isOn: snapshot.tunnelRecoveryEnabled,
-                            canEdit: snapshot.proxyClient == "shadowrocket" && !configUpdateBusy,
-                            tag: 2, in: doc, y: &y)
-            dashboardNote("以上是真正的 macOS 系统滑动开关。不会因为打开监控中心就更改你的代理节点、规则或订阅。", in: doc, y: &y)
+            if snapshot.proxyClient == "shadowrocket" {
+                dashboardHeading("Shadowrocket 专属功能", in: doc, y: &y)
+                dashboardSwitch("隧道掉线重连", description: "只重连已验证的 Shadowrocket 隧道，不切换节点",
+                                isOn: snapshot.tunnelRecoveryEnabled,
+                                canEdit: !configUpdateBusy,
+                                tag: 2, in: doc, y: &y)
+            }
         }
         doc.frame = NSRect(x: 0, y: 0, width: 558, height: max(463, y + 18))
         scroll.documentView = doc

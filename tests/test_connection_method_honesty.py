@@ -38,6 +38,6 @@ class HonestMethodContract(unittest.TestCase):
   self.assertNotIn('Codex WebSocket 域名',menu)
   self.assertIn('Codex 实际 HTTP 请求',menu)
   self.assertIn('公开测试请求出口',menu)
-  self.assertIn('ChatGPT 实际节点',menu)
+  self.assertIn('最近 OpenAI 请求路由',menu)
 
 if __name__=='__main__': unittest.main()

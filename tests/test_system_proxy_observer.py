@@ -3,7 +3,7 @@ import json,logging,tempfile,unittest
 from pathlib import Path
 from unittest import mock
 import openai_link_guardian as g
-from scripts.system_proxy_observer import parse_scutil
+from scripts.system_proxy_observer import parse_scutil, inspect_listener_owner
 
 HTTP="""HTTPEnable : 1
 HTTPProxy : 127.0.0.1
@@ -112,4 +112,28 @@ class ProxyObserverTests(unittest.TestCase):
    s=json.loads((Path(td)/'status.json').read_text())
    self.assertEqual(s['proxy_client'],'system_route')
    self.assertTrue(s['healthy'])
+ def test_listener_provenance_is_real_process_not_historical_port(self):
+  from types import SimpleNamespace
+  def process(argv, **_):
+   if argv[0].endswith("lsof"):
+    return SimpleNamespace(returncode=0,stdout="p50557\n",stderr="")
+   return SimpleNamespace(returncode=0,stdout="/Applications/Shadowrocket.app/Contents/PlugIns/MacPacketTunnel.appex/Contents/MacOS/MacPacketTunnel -AppleLanguages ...\n",stderr="")
+  with mock.patch("scripts.system_proxy_observer.subprocess.run",side_effect=process):
+   self.assertEqual(inspect_listener_owner("http://127.0.0.1:1082"),"shadowrocket")
+
+ def test_other_process_reusing_shadowrocket_port_is_not_shadowrocket(self):
+  from types import SimpleNamespace
+  def process(argv, **_):
+   if argv[0].endswith("lsof"):
+    return SimpleNamespace(returncode=0,stdout="p22222\n",stderr="")
+   return SimpleNamespace(returncode=0,stdout="/Applications/OtherProxy.app/Contents/MacOS/OtherProxy\n",stderr="")
+  with mock.patch("scripts.system_proxy_observer.subprocess.run",side_effect=process):
+   self.assertEqual(inspect_listener_owner("http://127.0.0.1:1082"),"other")
+
+ def test_listener_unknown_fails_closed(self):
+  with mock.patch("scripts.system_proxy_observer.subprocess.run",side_effect=OSError("no permission")):
+   self.assertEqual(inspect_listener_owner("http://127.0.0.1:1082"),"unverified")
+  with mock.patch("scripts.system_proxy_observer.subprocess.run",side_effect=AssertionError("no remote process scanning")):
+   self.assertEqual(inspect_listener_owner("http://example.com:1082"),"unverified")
+
 if __name__=='__main__':unittest.main()

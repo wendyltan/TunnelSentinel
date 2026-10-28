@@ -437,24 +437,20 @@ class GuardianTests(unittest.TestCase):
             self.assertFalse(svc.should_switch())
             self.assertEqual(svc.recovery_state, "node_unverified")
 
-    def test_manual_node_change_suppresses_churn(self):
+    def test_private_node_preference_is_not_polled_or_used_for_churn(self):
         cfg = dict(guardian.DEFAULTS, proxy_backend_auto_detect_enabled=False)
-        cfg["startup_grace_seconds"] = 0
         logger = logging.getLogger("manual-change-test")
-        logger.addHandler(logging.NullHandler())
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(guardian, "current_shadowrocket_node", return_value="old"):
+            with mock.patch.object(guardian, "current_shadowrocket_node",
+                                   side_effect=AssertionError("private preference must not be read")):
                 svc = guardian.Guardian(cfg, logger, Path(tmp) / "status.json")
-            svc.failure_times.extend([guardian.time.monotonic()] * 4)
-            bad = guardian.ProbeResult("edge", False, 0, False, 1.0)
-            with mock.patch.object(guardian, "current_shadowrocket_node", return_value="user-new"), \
-                 mock.patch.object(guardian, "proxy_endpoint_available", return_value=True), \
-                 mock.patch.object(svc, "probe_all", return_value=[bad]), \
-                 mock.patch.object(svc, "attempt_failover") as switch:
-                self.assertFalse(svc.cycle())
-            switch.assert_not_called()
-            self.assertGreater(svc.manual_override_until, guardian.time.monotonic())
-            self.assertEqual(svc.current_node, "user-new")
+                bad = guardian.ProbeResult("edge", False, 0, False, 1.0)
+                with mock.patch.object(guardian, "proxy_endpoint_available", return_value=True), \
+                     mock.patch.object(svc, "probe_all", return_value=[bad]), \
+                     mock.patch.object(svc, "attempt_failover") as switch:
+                    self.assertFalse(svc.cycle())
+                switch.assert_not_called()
+                self.assertFalse(svc.current_node_verified)
 
     def test_recovery_status_exposes_failed_control_channel(self):
         cfg = dict(guardian.DEFAULTS)
@@ -533,21 +529,21 @@ class GuardianTests(unittest.TestCase):
                         self.assertFalse(service.attempt_failover())
             probe.assert_not_called()
 
-    def test_cycle_syncs_manual_shadowrocket_node(self):
+    def test_cycle_never_reads_private_shadowrocket_global_node(self):
         config = dict(guardian.DEFAULTS, proxy_backend_auto_detect_enabled=False)
         logger = logging.getLogger("node-sync-test")
-        logger.addHandler(logging.NullHandler())
         good = guardian.ProbeResult("edge", True, 200, False, 0.1)
         with tempfile.TemporaryDirectory() as temp_dir:
             status_path = Path(temp_dir) / "status.json"
-            with mock.patch.object(guardian, "current_shadowrocket_node", return_value="manual-node"):
+            with mock.patch.object(guardian, "current_shadowrocket_node",
+                                   side_effect=AssertionError("private preferences forbidden")):
                 service = guardian.Guardian(config, logger, status_path)
-                with mock.patch.object(guardian, "proxy_endpoint_available", return_value=True):
-                    with mock.patch.object(service, "probe_all", return_value=[good]):
-                        self.assertTrue(service.cycle())
+                with mock.patch.object(guardian, "proxy_endpoint_available", return_value=True), \
+                     mock.patch.object(service, "probe_all", return_value=[good]):
+                    self.assertTrue(service.cycle())
             payload = guardian.json.loads(status_path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["current_node"], "manual-node")
-            self.assertTrue(payload["current_node_verified"])
+            self.assertFalse(payload["current_node_verified"])
+            self.assertFalse(payload.get("current_node"))
 
     def test_manual_tunnel_stop_suppresses_automatic_recovery(self):
         config = dict(guardian.DEFAULTS, proxy_backend_auto_detect_enabled=False)
@@ -613,7 +609,7 @@ class GuardianTests(unittest.TestCase):
                     self.assertTrue(service.cycle())
             self.assertFalse(service.manual_pause)
 
-    def test_current_node_is_restored_from_previous_status(self):
+    def test_previous_vendor_node_is_not_resurrected_in_dynamic_route_mode(self):
         config = dict(guardian.DEFAULTS)
         config.update({"nodes": ["a", "b"], "initial_node": "a"})
         logger = logging.getLogger("current-node-persistence-test")
@@ -621,9 +617,11 @@ class GuardianTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             status_path = Path(temp_dir) / "status.json"
             status_path.write_text('{"current_node": "b"}', encoding="utf-8")
-            with mock.patch.object(guardian, "current_shadowrocket_node", return_value=None):
+            with mock.patch.object(guardian, "current_shadowrocket_node",
+                                   side_effect=AssertionError("never read private node")):
                 service = guardian.Guardian(config, logger, status_path)
-            self.assertEqual(service.current_node, "b")
+            self.assertIsNone(service.current_node)
+            self.assertFalse(service.current_node_verified)
 
 
 if __name__ == "__main__":

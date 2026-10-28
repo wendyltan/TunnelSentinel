@@ -17,8 +17,6 @@ mkdir -p "$staged_app/Contents/MacOS" "$staged_app/Contents/Resources"
 
 /usr/bin/swiftc -parse-as-library -O -framework AppKit -framework ApplicationServices \
     "$project_dir/menubar/TunnelSentinelMenu.swift" \
-    "$project_dir/menubar/TunnelSentinelNativeRoute.swift" \
-    "$project_dir/menubar/TunnelSentinelRecovery.swift" \
     -o "$staged_app/Contents/MacOS/TunnelSentinelMenu"
 # Stage the opt-in Codex environment helper alongside the signed menu.
 # It is never invoked automatically at launch or by the Guardian.
@@ -40,8 +38,8 @@ info={
  "CFBundleName":"TunnelSentinel",
  "CFBundleDisplayName":"TunnelSentinel",
  "CFBundlePackageType":"APPL",
- "CFBundleShortVersionString":"1.6.6",
- "CFBundleVersion":"22",
+ "CFBundleShortVersionString":"1.6.7",
+ "CFBundleVersion":"23",
  "CFBundleIconFile":"AppIcon",
  "LSMinimumSystemVersion":"13.0",
  "LSUIElement":True,

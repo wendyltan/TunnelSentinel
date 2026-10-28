@@ -74,6 +74,20 @@ class GuardianClashTests(unittest.TestCase):
             self.assertEqual(obj.active_backend,'shadowrocket')
             self.assertEqual(obj.config['proxy'],'http://127.0.0.1:1082')
 
+    def test_verified_shadowrocket_different_port_never_depends_on_saved_port(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            obj=self.service(tmp)
+            with mock.patch.object(obj,'_inspect_system_route',
+                 return_value={'source':'macos_system_proxy','state':'explicit',
+                               'proxy_url':'http://127.0.0.1:9090',
+                               'endpoint':'127.0.0.1:9090',
+                               'listener_owner':'shadowrocket'}), \
+                 mock.patch.object(obj,'_inspect_mihomo',side_effect=AssertionError('not needed')):
+                obj.refresh_active_backend()
+            self.assertEqual(obj.active_backend,'shadowrocket')
+            self.assertEqual(obj.config['proxy'],'http://127.0.0.1:9090')
+            self.assertEqual(obj.verified_shadowrocket_endpoint,'http://127.0.0.1:9090')
+
     def test_other_proxy_reusing_old_shadowrocket_port_is_generic_and_never_restarts_shadowrocket(self):
         with tempfile.TemporaryDirectory() as tmp:
             obj=self.service(tmp)

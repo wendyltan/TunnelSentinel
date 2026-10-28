@@ -220,7 +220,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         refreshStatus()
         refreshNode()
         // In-process auto-recovery: no second App, no external AX helper.
-        IntegratedRecovery.shared.start()
         // Status file is produced on a 30-second cycle; node changes are independent.
         statusTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshStatus() }
@@ -455,13 +454,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return liveNode != snapshot.checkedNode
     }
     private var nodeUnverified: Bool {
-        // Native fallback selects egress independently from the global node.
-        // An unreadable global-node preference is not a network fault and
-        // should not override a passing OpenAI edge + quiet client diagnostics.
-        if snapshot.proxyClient != "shadowrocket" ||
-            snapshot.routeManagement == "native_fallback" ||
-            snapshot.routeManagement == "shadowrocket_policy_unverified" { return false }
-        return liveNode == nil && !snapshot.nodeVerified
+        // Private global-node reading has been retired. Missing an unrelated
+        // provider selection is never a connection fault or amber status.
+        return false
     }
 
     // This is the *observed proxy egress* from the same live ChatGPT
@@ -760,7 +755,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             String(snapshot.clashCandidateCount),String(snapshot.clashEligibleCount),
             String(snapshot.fresh), String(snapshot.networkHealthy),
             String(guardianRunning), String(guardianPaused), String(nodeUnverified),
-            statusLabel, menuBarStateMarker, IntegratedRecovery.shared.summary,
+            statusLabel, menuBarStateMarker,
             snapshot.nativeGroupUINode, String(snapshot.nativeGroupUIObservedAt),
             String(snapshot.egressObserved), snapshot.egressIP,
             snapshot.egressCountry, snapshot.egressColo,
@@ -1037,7 +1032,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                 if let errorText { self.showError(errorText) }
                 self.lastRenderedState = ""
                 self.refreshStatus()
-                IntegratedRecovery.shared.tick()
             }
         }
     }
@@ -1686,7 +1680,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         else { return }
         do {
             try updated.write(to:path,options:.atomic)
-            IntegratedRecovery.shared.tick()
             self.lastRenderedState = ""
             self.rebuildMenu()
         } catch { showError("配置保存失败，自动切换状态未改变") }

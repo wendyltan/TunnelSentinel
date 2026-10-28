@@ -553,3 +553,17 @@ Production Guardian backup: ~/Library/Application Support/OpenAILinkGuardian/bac
 审查发现实际风险：`Guardian.refresh_active_backend` 把当前 macOS 端口与 `shadowrocket_proxy` 旧端口相等视为 Shadowrocket，占用同端口的其他软件可能被误识别、触发不相干的 Shadowrocket 隧道重连。现在 `scripts/system_proxy_observer.py` 增加有界 `lsof -sTCP:LISTEN` + `ps` 只读查询本机当前端口监听进程，输出 `listener_owner=shadowrocket/other/unverified`，不外泄 PID/其他进程命令行或浏览域名。确认 `MacPacketTunnel` 二进制确属 `/Applications/Shadowrocket.app/Contents/` 才标注拥有者；未确认立刻降级通用系统代理（含 Shadowrocket 专属恢复关闭）。实机读到当前 1082 确属 Shadowrocket；测试复用端口被其他进程与权限未知时都 fail closed，不依赖订阅/固定节点名。
 
 UI v1.6.6：删除永远「未知」的 ChatGPT 实际节点总览占位行；只有后端提供有效、带时间、当前新鲜的逐请求代理链证据时才呈现「最近 OpenAI 请求路由」（不保证来自 ChatGPT App）；菜单紧凑卡优先呈现公共出口采样，不把它叫「GPT 实际节点」；仅验证由 Shadowrocket 持有当前监听端口才显示「Shadowrocket 隧道重连」，其他客户端只保留通用健康与 Codex/Work `.env` 操作。未修改任何 Shadowrocket 路由/订阅，不打开代理日志，不要求系统广泛 App 数据权限；现有自动节点控制继续关闭。仍需人工验收设置 UI、不同软件复用原端口时的通用降级，且不强制切换用户正在使用的好用链路。
+
+## 2026-10-28 16:25+ CST · P0/P1 修复（代理所有权恢复 + 退役旧组读取/轮询）
+
+用户授权继续处理上次只读耦合审计的 P0/P1。起始 Mac 当时系统代理已为 Forest `127.0.0.1:7890`，Guardian `proxy_client=system_proxy`、基础 `healthy=true`，`~/.codex/.env` 的哈希为 `a658ac8dc5af0231d75430f56f7a3607cdc03c4819395b7e373e326cef5faaee`。不得为验证切断 Forest、Shadowrocket、ChatGPT/Codex。
+
+P0: `scripts/system_proxy_observer.py` 现在明确区分 TCP 端口无监听（`listener_owner=missing`）与权限受限（`unverified`）。Guardian 只在自己的**本进程、本次运行**刚亲自验证同一个系统端口的监听进程确属 Shadowrocket 时保留不持久化的 90 秒所有权租约；当随后同一系统入口确实变成缺失监听，进入 `shadowrocket_recovery_candidate`，**不宣称仍验证了所有者**。实际尝试重连之前必须再次检查入口及 missing、macOS `nesessionmanager` 最近 90 秒明确 `Plugin failed`、Shadowrocket 主 App 的精确进程可执行路径仍运行、开关开启、租约未过期/未消耗；`manual` 或 `unknown`、端口被其他软件接管、PAC、路由变化均拒绝。只允许一次有冷却的 `shadowrocket://connect` 调用，重连后再次验证监听进程确实属于 Shadowrocket 且公共探测成功，才报成功。隔离测试不会执行真实 URL、网络配置或节点切换。**限制**：Guardian 重启前未见过所有者、异常日志不符合已知模式、系统日志读取失败、或主 App 不在预期路径时宁可不自动恢复；尚未在真实故障下验收。
+
+P1: `Guardian.cycle` 和启动初始化**不再默认调用** `current_shadowrocket_node()` 读取受保护 Group Container；自动系统路由模式不复活上次缓存的旧全局节点，也不把刻意停止读取显示为失败。菜单中的旧原生节点控制器及已删除 `OpenAI-Resilience` 固定四节点/45 秒轮询已退役：`menubar/TunnelSentinelNativeRoute.swift`、`TunnelSentinelRecovery.swift` 删除，安装不再编译，Menu.swift 去除 `IntegratedRecovery.shared.start/tick/summary` 触发。保留 Guardian 的真实 Codex 流监控、Computer Use 元数据、当前系统代理/公共出口及单一 Shadowrocket 专属隧道恢复。旧 `shadowrocket://select` Python 辅助方法仍为未启用的遗留代码，未作为本次恢复动作的一部分；任何后续启用必须独立安全审计。
+
+隔离合约覆盖：原 App 在运行+明确 Plugin failed 的一次恢复、手动/未知停止拒绝、原 App 关闭拒绝、所有者/端口变化拒绝、没有/过期租约拒绝、失败后消费租约、默认不读私有首选项；另有 lsof 缺失与权限失败分流。回归测试和 Swift 编译结果以本次最终执行为准。
+
+验收：总览和三标签仍正常；当前 Forest 7890 应显示通用系统代理，不能展示 Shadowrocket 专属开关或旧分组；转回 Shadowrocket 后专属隧道重连开关仅在拥有者确认为该 App 时出现（不要为此强行切换）。真实异常重连尚未断线实测，不可把单测当实机证明。
+
+补充：P0/P1 最终代码还去掉了 `Guardian.shadowrocket_proxy` 历史端口比较；只有当前系统代理 URL 和实时 `listener_owner=shadowrocket` 确认归属后才建立短租约，当前 Shadowrocket 即使换为其他本机端口也可被检测。新增针对原配置 1082、当前确证 9090 的测试。别在未来变更时恢复「旧 1082」判断。

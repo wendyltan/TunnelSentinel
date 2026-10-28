@@ -74,6 +74,10 @@ def inspect_listener_owner(proxy_url: str) -> str:
         listing = subprocess.run(
             ["/usr/sbin/lsof", "-nP", "-sTCP:LISTEN", "-iTCP:" + str(port), "-Fp"],
             capture_output=True, text=True, check=False, timeout=2)
+        # lsof exit=1, empty output and no diagnostic means no process owns
+        # this port. Permission errors are NOT treated as a missing listener.
+        if listing.returncode == 1 and not listing.stdout.strip() and not listing.stderr.strip():
+            return "missing"
         if listing.returncode != 0:
             return "unverified"
         pids = [line[1:] for line in listing.stdout.splitlines()

@@ -5,7 +5,6 @@ import unittest
 
 root = Path(__file__).resolve().parents[1]
 menu = (root/'menubar/TunnelSentinelMenu.swift').read_text()
-recovery = (root/'menubar/TunnelSentinelRecovery.swift').read_text()
 
 class MenuCompactStatusTests(unittest.TestCase):
     def test_card_is_narrow_and_dividers_are_symmetric(self):
@@ -36,11 +35,13 @@ class MenuCompactStatusTests(unittest.TestCase):
         self.assertNotIn('snapshot.backendLastLoggedName',card)
         self.assertNotIn('snapshot.userLastVerifiedNode',card)
 
-    def test_background_ax_read_is_read_only_and_fail_closed(self):
-        self.assertIn('if let observed = IntegratedGroupController.currentNode()', recovery)
-        self.assertIn('node:observed,armed:true',recovery)
-        self.assertIn('reported("limited",reason:',recovery)
-        self.assertIn('"limited":"监测中 · 切换受限"',recovery)
-        self.assertIn('(0...105).contains(Int(Date().timeIntervalSince1970) - observed)',menu)
+    def test_deleted_group_controller_is_not_packaged_or_polled(self):
+        install=(root/'install-menubar.sh').read_text()
+        self.assertNotIn('TunnelSentinelRecovery.swift',install)
+        self.assertNotIn('TunnelSentinelNativeRoute.swift',install)
+        self.assertNotIn('IntegratedRecovery.shared.start()',menu)
+        self.assertNotIn('IntegratedRecovery.shared.tick()',menu)
+        self.assertFalse((root/'menubar/TunnelSentinelRecovery.swift').exists())
+        self.assertFalse((root/'menubar/TunnelSentinelNativeRoute.swift').exists())
 
 if __name__ == '__main__': unittest.main()

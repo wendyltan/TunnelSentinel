@@ -259,3 +259,11 @@ Use `AGENTS.md` and `HANDOFF.md` for safety and current deployment facts; keep R
 - [ ] **P1：退役历史固定四节点/已删除分组的自动恢复组件常驻轮询**；只有用户明确需要且有可验证的适配器时再重新提供控制。
 - [ ] **P2：Mihomo 适配器从 Clash Verge Rev 专属 `clash-verge.yaml` 发现方式解耦**，只接受用户授权的受限只读入口，保留通用 `system_proxy` 兜底。
 - [ ] **P2：评估 SOCKS/PAC/TUN 的 Codex 环境配置兼容性与对应验收，不凭端口猜测**。
+
+### 2026-10-28 · P0/P1 收敛
+
+- [x] P0 代码：短时所有权证明 + 缺失监听与 TCC 读取受限区分；异常日志明确 failed、原 App 仍运行时才可能恢复；恢复后重新查证实际拥有者，其他情形 fail closed
+- [x] P1 默认循环不再读取 Shadowrocket 私有全局节点，不展示因此产生的“节点读取受限”假异常；自动系统路由模式不继承旧节点
+- [x] P1 删除固定四节点/旧组的 AX 编辑器及 45 秒轮询，安装包不再编译旧控制器
+- [ ] **用户人工 UI 验收**：当前 Forest 7890 的通用模式、总览/记录/设置、代理同步与撤销入口；若未来用 Shadowrocket 才显示专属隧道重连开关
+- [ ] **仍需真实故障验收**：未来在合适时间用户同意的环境，通过受控“Plugin failed”实际事件验证 Shadowrocket 自动恢复；当前不打断网络模拟生产故障

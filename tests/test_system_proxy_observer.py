@@ -136,4 +136,13 @@ class ProxyObserverTests(unittest.TestCase):
   with mock.patch("scripts.system_proxy_observer.subprocess.run",side_effect=AssertionError("no remote process scanning")):
    self.assertEqual(inspect_listener_owner("http://example.com:1082"),"unverified")
 
+ def test_port_missing_distinct_from_permission_denial(self):
+  from types import SimpleNamespace
+  missing=SimpleNamespace(returncode=1,stdout="",stderr="")
+  forbidden=SimpleNamespace(returncode=1,stdout="",stderr="Operation not permitted")
+  with mock.patch("scripts.system_proxy_observer.subprocess.run",return_value=missing):
+   self.assertEqual(inspect_listener_owner("http://127.0.0.1:1082"),"missing")
+  with mock.patch("scripts.system_proxy_observer.subprocess.run",return_value=forbidden):
+   self.assertEqual(inspect_listener_owner("http://127.0.0.1:1082"),"unverified")
+
 if __name__=='__main__':unittest.main()

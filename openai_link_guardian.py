@@ -429,6 +429,18 @@ def latest_shadowrocket_stop_reason(lookback_seconds: int) -> str:
     return "unknown"
 
 
+def shadowrocket_app_still_running() -> bool:
+    """Require current, exact executable provenance before a recovery action."""
+    try:
+        p = subprocess.run(["/bin/ps", "-axo", "comm="], text=True,
+                           capture_output=True, check=False, timeout=2)
+        return (p.returncode == 0 and
+                "/Applications/Shadowrocket.app/Contents/MacOS/Shadowrocket"
+                in p.stdout.splitlines())
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def read_known_good_nodes(path: Path, now: Optional[float] = None,
                           max_age_hours: float = 72) -> list[str]:
     """Extract *display names only* from previous successful public edge checks.
@@ -614,8 +626,15 @@ class LogWatcher:
 class Guardian:
     def __init__(self, config: dict, logger: logging.Logger, status_path: Path):
         self.config = config
-        self.shadowrocket_proxy = str(config.get("proxy", ""))
+        # Legacy constructor default until the first real system-route cycle;
+        # no proprietary node preferences are read at construction.
         self.active_backend = "shadowrocket"
+        # Ephemeral ownership lease: only a listener proven in THIS running
+        # Guardian process can qualify for one conservative missing-tunnel
+        # recovery. Never persist the lease or infer it from a port alone.
+        self.verified_shadowrocket_endpoint = ""
+        self.verified_shadowrocket_at = 0.0
+        self.missing_tunnel_reconnect_used = False
         self.system_route_observation: dict = {}
         self.route_generation = 0
         self.clash_observation: dict = {}
@@ -707,11 +726,13 @@ class Guardian:
         # Auto-backend sessions cannot assume Shadowrocket owns this Mac.
         # Its protected App Group preference is only read after the runtime
         # selector has explicitly confirmed a Shadowrocket proxy owner.
-        observed_node = (None if config.get("proxy_backend_auto_detect_enabled",False)
-                         else current_shadowrocket_node())
-        self.current_node = observed_node or previous_node or config.get("initial_node") or (
-            nodes[0] if nodes else None
-        )
+        # Never consult another app's protected preference during startup.
+        # Legacy manual node switching is no longer a supported auto route.
+        observed_node = None
+        # In automatic system-route mode never resurrect a historical vendor
+        # selection from an old status file or a deleted policy group.
+        self.current_node = (None if config.get("proxy_backend_auto_detect_enabled",False)
+                             else config.get("initial_node") or (nodes[0] if nodes else None))
         self.current_node_verified = observed_node is not None
 
     def _codex_stream_worker(self) -> None:
@@ -1546,25 +1567,34 @@ class Guardian:
         state=route.get("state")
         selected=str(route.get("proxy_url","")) if state=="explicit" else ""
         if state=="explicit":
-            try:
-                same_configured_endpoint = (
-                    urlparse(selected).hostname, urlparse(selected).port
-                ) == (
-                    urlparse(self.shadowrocket_proxy).hostname,
-                    urlparse(self.shadowrocket_proxy).port
-                )
-            except ValueError:
-                same_configured_endpoint=False
-            # Matching the old configured PORT is not proof of ownership.
-            # Require a real, current listener executable observation.
-            shadow_owner = (
-                same_configured_endpoint and route.get("listener_owner") == "shadowrocket"
-            )
+            # The current listener executable is the authority, not any
+            # historic hardcoded/configured port or a subscription name.
+            shadow_owner = route.get("listener_owner") == "shadowrocket"
             if shadow_owner:
                 backend="shadowrocket"
                 selection=selected
                 clash={}
+                self.verified_shadowrocket_endpoint=selected
+                self.verified_shadowrocket_at=time.monotonic()
+                self.missing_tunnel_reconnect_used=False
+            elif (route.get("listener_owner")=="missing"
+                  and self.config.get("tunnel_recovery_enabled",False)
+                  and not self.missing_tunnel_reconnect_used
+                  and self.verified_shadowrocket_endpoint==selected
+                  and 0 <= time.monotonic()-self.verified_shadowrocket_at <= 90):
+                # Recovery CANDIDATE, not vendor ownership proof. Requires an
+                # independent fresh OS failure event and live app check below.
+                backend="shadowrocket_recovery_candidate"
+                selection=selected
+                clash={}
             else:
+                # A different listener, changed endpoint, or unresolved owner
+                # must invalidate the prior proof. Do not restart old apps.
+                if (route.get("listener_owner") != "missing" or
+                        self.verified_shadowrocket_endpoint != selected):
+                    self.verified_shadowrocket_endpoint=""
+                    self.verified_shadowrocket_at=0.0
+
                 # Probe the existing official controller in read-only mode; it
                 # must confirm current system endpoint ownership to qualify.
                 clash=self._inspect_mihomo()
@@ -1578,10 +1608,14 @@ class Guardian:
                     selection=selected
                     clash={}
         elif state=="direct_or_tun":
+            self.verified_shadowrocket_endpoint=""
+            self.verified_shadowrocket_at=0.0
             backend="system_route"
             selection=""
             clash={}
         else:
+            self.verified_shadowrocket_endpoint=""
+            self.verified_shadowrocket_at=0.0
             backend="system_unresolved"
             selection=""
             clash={}
@@ -1612,12 +1646,62 @@ class Guardian:
             self.pending_egress_count=0
             self.confirmed_egress=None
 
+    def recover_verified_missing_shadowrocket(self) -> bool:
+        """Attempt at most one safe reconnect after freshly proven ownership.
+
+        Being on a former vendor PORT is insufficient. Missing and unreadable
+        listeners are different. A manual/unknown stop never restarts an app.
+        """
+        expected = self.verified_shadowrocket_endpoint
+        now = time.monotonic()
+        # Only the current process can hold this short-lived ownership lease.
+        if (self.active_backend != "shadowrocket_recovery_candidate" or
+                not self.config.get("tunnel_recovery_enabled",False) or
+                self.missing_tunnel_reconnect_used or not expected or
+                self.config.get("proxy","") != expected or
+                not 0 <= now - self.verified_shadowrocket_at <= 90):
+            return False
+        # Re-read current system routing immediately before touching any app.
+        fresh = self._inspect_system_route()
+        if (fresh.get("state") != "explicit" or
+                fresh.get("proxy_url") != expected or
+                fresh.get("listener_owner") != "missing"):
+            self.recovery_state="recovery_owner_changed"
+            self.recovery_reason="监听地址或所有者已变化，取消专属恢复"
+            return False
+        reason = latest_shadowrocket_stop_reason(min(90,int(self.config.get("tunnel_event_lookback_seconds",300))))
+        if reason != "failed" or not shadowrocket_app_still_running():
+            self.recovery_state="recovery_not_authorized"
+            self.recovery_reason="没有明确的隧道意外失败及原应用运行证据；未自动重连"
+            return False
+        self.missing_tunnel_reconnect_used=True  # consume before the action
+        success, results = self.recover_missing_tunnel()
+        # A different client may acquire the listener while we are settling.
+        self.refresh_active_backend()
+        proven = success and self.active_backend == "shadowrocket"
+        self.recovery_state="tunnel_reconnected" if proven else "recovery_unverified"
+        self.recovery_reason=("原应用端口恢复且公开测试可达" if proven
+                              else "重连结果未能确认原应用监听进程及出口")
+        self.observe_edge_incident(results,proven)
+        self.write_status(results or [ProbeResult("proxy",False,0,False,0.0,"not verified")],
+                          0,proven,proxy_available=proven,
+                          tunnel_stop_reason="failed")
+        return proven
+
     def cycle(self) -> bool:
         if not self.config.get("enabled", True):
             self.logger.info("guardian disabled by configuration")
             return True
         self.refresh_active_backend()
         self.maybe_begin_computer_use()
+        if self.active_backend == "shadowrocket_recovery_candidate":
+            ok = self.recover_verified_missing_shadowrocket()
+            if not ok:
+                # Never claim the old vendor still owns the system route.
+                self.write_status([ProbeResult("proxy",False,0,False,0.0,"listener missing")],
+                                  0,False,proxy_available=False,
+                                  tunnel_stop_reason="unverified")
+            return ok
         # Clash still listening is not proof it owns the current system path.
         # Fail closed if ownership can no longer be established from scutil.
         if self.active_backend == "clash" and self.clash_observation.get("active") is not True:
@@ -1626,7 +1710,9 @@ class Guardian:
             self.write_status([ProbeResult("proxy_owner",False,0,False,0.0,"unverified")],
                               0,False,proxy_available=False,tunnel_stop_reason="backend_unverified")
             return False
-        observed_node = current_shadowrocket_node() if self.active_backend == "shadowrocket" else None
+        # P1: no periodic CFPreferences/App Group reads from other clients.
+        # Node names must come from opt-in request-level adapter evidence.
+        observed_node = None
         self.current_node_verified = observed_node is not None
         if observed_node:
             if self.current_node and observed_node != self.current_node:

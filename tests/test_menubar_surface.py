@@ -14,12 +14,13 @@ class MenuSurfaceTests(unittest.TestCase):
         self.assertNotIn("color: .windowBackgroundColor", card)
         self.assertIn("let nodeBox = AppearanceFillView(", card)
 
-    def test_native_fallback_does_not_request_other_apps_data(self):
+    def test_no_redundant_shadowrocket_private_preference_read(self):
         reader = SOURCE.split("private func refreshNode() {", 1)[1].split(
             "private var nodePending:", 1)[0]
-        self.assertIn('guard snapshot.proxyClient == "shadowrocket" else {', reader)
-        self.assertLess(reader.index('guard snapshot.proxyClient == "shadowrocket" else {'),
-                        reader.index("process.executableURL"))
+        self.assertIn("liveNode = nil", reader)
+        self.assertNotIn("process.executableURL", reader)
+        self.assertNotIn("Group Containers", SOURCE)
+        self.assertNotIn("defaults export", reader)
 
 
 if __name__ == "__main__":

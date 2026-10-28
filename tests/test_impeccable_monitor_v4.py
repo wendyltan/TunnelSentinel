@@ -12,11 +12,11 @@ class MonitorV4Tests(unittest.TestCase):
    self.assertNotIn(banned,S)
   self.assertNotIn('TunnelSentinelNodeAdvisor.swift',INSTALL)
   self.assertNotIn('node_advisor.py',INSTALL)
- def test_real_shadowrocket_rule_audit_stays(self):
-  self.assertIn('核验 Shadowrocket 当前配置规则',S)
-  self.assertIn('auditShadowrocketRules(_:)',S)
-  self.assertIn('Shadowrocket 全局选择',S)
-  self.assertIn('Cloudflare 公共 trace',S)
+ def test_unsupported_shadowrocket_rule_audit_is_not_an_entry(self):
+  self.assertNotIn('核验 Shadowrocket 当前配置规则',S)
+  self.assertNotIn('auditShadowrocketRules(_:)',S)
+  self.assertIn('当前连接路径',S)
+  self.assertIn('ChatGPT 实际节点',S)
  def test_flat_overview_four_values_in_one_panel(self):
   self.assertIn('let panel = AppearanceFillView(',S)
   self.assertIn('x: 0, y: 84, in: panel',S)
@@ -24,7 +24,7 @@ class MonitorV4Tests(unittest.TestCase):
   self.assertIn('let card = NSView(frame:',S)
  def test_scroll_policy(self):
   self.assertIn('scroll.scrollerStyle = .overlay',S)
-  self.assertIn('scroll.hasVerticalScroller = dashboardSelection != 0',S)
-  self.assertIn('scroll.hasVerticalScroller = tab != 0',S)
+  self.assertIn('scroll.hasVerticalScroller = true',S)
+  self.assertIn('scroll.scrollerStyle = .overlay',S)
 if __name__=='__main__':
  unittest.main()

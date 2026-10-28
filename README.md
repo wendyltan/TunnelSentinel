@@ -391,3 +391,11 @@ TunnelSentinel 的基础网络、ChatGPT 公共入口、Codex TLS/匿名 WebSock
 无定时自动改写、无 TUN/代理内核操作、无全局节点切换、无登录 Cookie/Token、无强制重启当前 ChatGPT。已运行的进程可能直到完全退出重新启动才读到新环境。此功能改善的是 Codex/Work 子系统的显式代理入口，**不能证明普通 ChatGPT、Computer Use 云端工具均经此入口，也不能把公共入口 200 宣称为业务成功**。用户已有生效配置与两份桌面回退脚本保持不变。
 
 验收必须**在用户对话中**附可勾选步骤，包含设置页状态、点击同步后成功/不变、真实 Codex 工作流、回退演练建议（只在可中断会话时）、保证其他代理和配置不变。README/TODO 不代替对话内清单。
+
+### 1.6.5 · 精简监控中心（2026-10-28）
+
+三个标签页：**总览**（Computer Use / Codex / ChatGPT / 基础网络、当前连接路径、最近连接事件）、**记录**（断线/重连时间线及三项真实客户端证据）、**设置**（Codex/Work 代理入口同步与回退、隧道掉线重连）。原「节点」页、「Shadowrocket 当前规则核验」及其 AX 审计器、单独的「诊断」页、无实用作用的「自动节点控制」开关，以及匿名多站点探测长列表，全部从用户入口移除。后台历史断线与客户端元数据探测仍保留；不清空记录。
+
+路径只区分证据层级：macOS 当前系统代理监听地址、Codex `~/.codex/.env` 显式入口、Guardian 通过当前代理的匿名 `chatgpt.com/cdn-cgi/trace` 出口 IP/地区、真实 ChatGPT 单次请求的节点归属（未确认）。**同一 127.0.0.1 入口不证明 ChatGPT 实际业务经过同一远端代理节点/出口 IP；公开 GET 200 不代表登录、WebSocket、任务成功。**
+
+旧 OpenAI-Resilience 组已由用户删除；live Guardian 历史状态 `native_fallback_enabled=true` 和 `native_fallback_group` 已在备份后清理，仅调整这两项并重启 Guardian，不触碰 Shadowrocket、ChatGPT、Codex、`~/.codex/.env`、`tunnel_recovery_enabled`。菜单 App 不再尝试读取 Shadowrocket 受保护偏好来猜测节点，不会引发额外的 TCC 权限提示。所有新增 UI 必须在交付聊天中提供勾选式人工验收清单。

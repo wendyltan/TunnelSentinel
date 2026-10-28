@@ -537,3 +537,11 @@ Production Guardian backup: ~/Library/Application Support/OpenAILinkGuardian/bac
 - Mac 原生辅助功能实际选中「设置」页，读到 `Codex / Work 代理入口` 标题、`已同步 · 127.0.0.1:1082` 状态，以及两个真正的 `AXButton`：`检测并同步当前代理` / `撤销托管配置`。**生产 UI 写入/撤销确认按钮未按下**（之后窗口访问性暂失），不能将源码/临时文件 E2E 等同于已证实所有生产 UI 按钮实际执行。需在用户方便时由用户勾选复核。
 - 最终安装后校验：`~/.codex/.env` sha256 `d80c65c95c048198ac590d9ad22cdfafc75a02fe1a8def6d44492ada4dfb59e8`，Guardian live config sha256 `1fafdaefdba3f422ff5266371861647bb053b69f97e3831c00b9a2eceded3399`，桌面两份回退/切换脚本 sha256 均未变化。运行中系统代理 Shadowrocket `127.0.0.1:1082`；Codex CLI 工具 read-only status `synced`。所有原自动节点开关保持关闭。原有 `overall_status=attention` 为独立业务问题，不是同步功能引起；基础 network axis 曾证实 OK。
 - 同时复核社区 openai/codex #30695、#34955，显式环境代理对 Codex app-server/Work 可能有效，但不能证明 ChatGPT Electron Chromium 的所有 HTTP 请求都经过 `.env`；需要用户真实连接稳定性验收，不说“100% 已修复所有断线”。
+
+## 2026-10-28 12:44+ CST · 监控中心减法、诚实呈现代理证据
+
+用户认为「Shadowrocket 当前规则核验」没有实效，「节点」含义不清、五页难用，要求精简无用入口，并问能否证明全局出站与 ChatGPT 真实出站相同。实机确认：`proxy_client=shadowrocket`，系统 HTTP 代理 `127.0.0.1:1082`，Codex 显式 .env 也是 `127.0.0.1:1082`；Guardian 公共检测偶尔提供新鲜 `openai_egress_ip`（它只是通过本机代理请求 Cloudflare trace 的观测出口），**不能据此证明 ChatGPT 自身的实际业务节点、公网出口、是否与某个全局选择相同**。Native per-request reader OFF，避免 TCC 访问受保护日志。
+
+改动：菜单标签由「总览/时间线/诊断/节点/设置」改为「总览/记录/设置」。总览保留四项关键指标、增加四行连接路径与“实际节点暂无法确认”说明；记录保留断线事件及真实本机 Computer Use、Codex 断流与 HTTP 元数据，去掉匿名深层探测墙/其他 AI 站列表；设置保留 .env 入口同步/回退和隧道重连。原生规则核验按钮和 `TunnelSentinelShadowrocketAudit.swift` 从编译删除；一直灰色的自动节点开关在菜单、设置页移除（后台安全默认依旧 OFF）。停止菜单对 Shadowrocket 私有偏好做重复的 `defaults export`，优先显示 Guardian 只读状态。历史业务记录不删除，后台监测不关。
+
+在用户明确称旧组已删除的前提下，**备份后**只将 live Guardian `native_fallback_enabled` 改 false、`native_fallback_group` 改空；备份 `~/Library/Application Support/OpenAILinkGuardian/backups/old-group-cleanup-20261028-125221/config.before.json`。重启 Guardian LaunchAgent 后 12:52:26 状态 `route_management=shadowrocket_global_monitor`、`reachable`，本机代理 `127.0.0.1:1082`。原自动节点开关继续 false、隧道重连 true；原始 `~/.codex/.env` SHA256 `d80c65c95c048198ac590d9ad22cdfafc75a02fe1a8def6d44492ada4dfb59e8`，无改动。全局节点 `Seattle 03` 旧字段无法证实为当前 per-request 节点，UI 不因此给 GPT 节点排名；公网页面出口不能与其比较作为同节点判定。后续开发不要恢复旧组/旧核验入口。

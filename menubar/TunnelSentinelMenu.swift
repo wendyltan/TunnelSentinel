@@ -173,15 +173,8 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     private let guardianLabel = "com.wuwendi.openai-link-guardian"
     private let base = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/OpenAILinkGuardian")
-    private let preferencePath = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Group Containers/group.com.liguangming.Shadowrocket/Library/Preferences/group.com.liguangming.Shadowrocket").path
-    private let nodePreference = "group.com.liguangming.SelectedServerName"
     private var statusItem: NSStatusItem!
     private var statusTimer: Timer?
-    private var nodeTimer: Timer?
-    private var nodeLookupBusy = false
-    private var lastNodeReadFailedAt: Date?
-    private var nodeLookupSuspended = false
     private var liveNode: String?
     private var snapshot = Snapshot()
     private var lastRenderedState = ""
@@ -199,7 +192,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     private var dashboardSelection = 0
     private var expandedTimelineEvents = Set<String>()
     private var timelineVisibleIDs: [String] = []
-    private var ruleAuditRunning = false
     private var configUpdateBusy = false
     private var codexProxyEnvBusy = false
 
@@ -448,73 +440,9 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     }
 
     private func refreshNode() {
-        // Current system route is independent of any deleted historical proxy group.
-        // Guardian provides the separately labelled *global* selection in status.json. Avoid a
-        // redundant cross-App protected-preferences read from this menu app:
-        // macOS may show a broad "access data from other apps" TCC prompt.
-        guard snapshot.proxyClient == "shadowrocket" else {
-            liveNode = nil
-            return
-        }
-        if snapshot.routeManagement == "shadowrocket_policy_unverified" { return }
-        guard !nodeLookupBusy && !nodeLookupSuspended else { return }
-        if let last = lastNodeReadFailedAt, Date().timeIntervalSince(last) < 20 { return }
-        nodeLookupBusy = true
-        let domain = preferencePath
-        let key = nodePreference
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
-            process.arguments = ["export", domain, "-"]
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = Pipe()
-            var value: String?
-            var timedOut = false
-            do {
-                try process.run()
-                // macOS may stall access to Shadowrocket's protected Group Container.
-                // Never block the status menu or leave an unbounded waiting read.
-                let deadline = Date().addingTimeInterval(1.25)
-                while process.isRunning && Date() < deadline {
-                    Thread.sleep(forTimeInterval: 0.05)
-                }
-                if process.isRunning {
-                    timedOut = true
-                    process.terminate()
-                    Thread.sleep(forTimeInterval: 0.1)
-                    if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
-                } else {
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    if process.terminationStatus == 0,
-                       let dict = try PropertyListSerialization.propertyList(from: data, format: nil)
-                            as? [String: Any] {
-                        value = dict[key] as? String
-                    }
-                }
-            } catch { }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.nodeLookupBusy = false
-                // A protected-file access can leave a kernel-stalled helper.
-                // Disable automatic retries until an explicit manual refresh.
-                if timedOut { self.nodeLookupSuspended = true }
-                guard let value, !value.isEmpty else {
-                    self.lastNodeReadFailedAt = Date()
-                    self.rebuildMenu()
-                    return
-                }
-                self.lastNodeReadFailedAt = nil
-                if self.liveNode != value {
-                    let old = self.liveNode
-                    self.liveNode = value
-                    self.rebuildMenu()
-                    if old != nil && value != self.snapshot.checkedNode {
-                        self.requestProbe()
-                    }
-                }
-            }
-        }
+        // Never read Shadowrocket's protected private preferences. Guardian
+        // already supplies a scope-labelled global observation; not GPT route proof.
+        liveNode = nil
     }
 
     private var nodePending: Bool {
@@ -819,7 +747,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         return "AI 分流检测 · \(ok)/\(snapshot.aiMatrixSites.count) 可达"
     }
 
-    @objc private func showAIMatrix() { presentDashboard(tab: 2) }
 
     private func rebuildMenu() {
         guard let statusItem else { return }
@@ -864,7 +791,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         // Keep the permanent menu bar compact; never pin a stale provider
         // node or unrelated global Shadowrocket selection next to the clock.
         let compactEdge = snapshot.fresh && snapshot.networkHealthy && snapshot.egressObserved
-            && !snapshot.egressCountry.isEmpty ? " · GPT \(shortEgress)" : ""
+            && !snapshot.egressCountry.isEmpty ? " · 公网 \(shortEgress)" : ""
         statusItem.button?.title = "\(menuBarStateMarker) \(statusLabel)\(compactEdge)"
         statusItem.button?.contentTintColor = nil
         let selectedDescription = snapshot.proxyClient != "shadowrocket" &&
@@ -893,10 +820,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         menu.addItem(menuItem("打开监控中心…", symbol: "rectangle.grid.1x2", action: #selector(openDashboard)))
         menu.addItem(menuItem("立即检测基础链路", symbol: "arrow.clockwise", action: #selector(forceProbe)))
         menu.addItem(.separator())
-        menu.addItem(switchMenuRow("自动节点控制",
-                                   subtitle: autoSwitchSupported ? "可控制已验证的 GPT 专用分组" : "当前 Shadowrocket 仅提供只读监测",
-                                   on: snapshot.automaticControlEnabled,
-                                   enabled: autoSwitchSupported && !configUpdateBusy, tag: 1))
         menu.addItem(switchMenuRow("隧道掉线重连",
                                    subtitle: snapshot.proxyClient == "shadowrocket" ?
                                        "Shadowrocket 意外断开时尝试重连" : "其他代理仅监测；不操作 Shadowrocket",
@@ -927,8 +850,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     }
 
     @objc private func forceProbe() {
-        nodeLookupSuspended = false
-        lastNodeReadFailedAt = nil
         requestProbe()
         refreshStatus()
         refreshNode()
@@ -1148,7 +1069,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         updateMonitorConfig(["tunnel_recovery_enabled": enabled])
     }
 
-    @objc private func showDeepConnection() { presentDashboard(tab: 2) }
+    @objc private func showDeepConnection() { presentDashboard(tab: 1) }
 
     // The menu stays deliberately short. Native switches remain real controls,
     // not menu-item text pretending to be a toggle.
@@ -1197,53 +1118,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         dashboardScroll?.contentView.scroll(to: .zero)
         if let scroll = dashboardScroll { scroll.reflectScrolledClipView(scroll.contentView) }
     }
-    @objc private func auditShadowrocketRules(_ sender: NSButton) {
-        guard snapshot.proxyClient == "shadowrocket", !ruleAuditRunning else { return }
-        ruleAuditRunning = true
-        refreshDashboard()
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let report = ShadowrocketRuleAuditor.run()
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                self.ruleAuditRunning = false
-                let verified = (report["state"] as? String) == "verified_rule_matches"
-                    && (report["rules"] as? [[String:String]])?.count == 4
-                if verified {
-                    if let content = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted]) {
-                        try? content.write(to: self.base.appendingPathComponent("shadowrocket_rule_audit.json"),
-                                           options: .atomic)
-                    }
-                } else {
-                    // Do not replace the last actual evidence with an empty/partial UI attempt.
-                    let attempt: [String:Any] = [
-                        "source":"shadowrocket_native_rule_tester",
-                        "checked_at":report["checked_at"] ?? Int(Date().timeIntervalSince1970),
-                        "state":report["state"] ?? "unavailable",
-                        "result_count":(report["rules"] as? [[String:String]])?.count ?? 0
-                    ]
-                    if let content = try? JSONSerialization.data(withJSONObject: attempt, options: [.prettyPrinted]) {
-                        try? content.write(to: self.base.appendingPathComponent("shadowrocket_rule_audit_last_attempt.json"),
-                                           options: .atomic)
-                    }
-                }
-                self.refreshDashboard()
-                if !verified {
-                    self.showError("本次 Shadowrocket 规则核验未取得完整结果。没有更改代理规则，也没有覆盖上次有效核验。")
-                }
-            }
-        }
-    }
-
-    private func recentNativeRuleAudit() -> [[String:String]] {
-        let file = base.appendingPathComponent("shadowrocket_rule_audit.json")
-        guard let data = try? Data(contentsOf: file),
-              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String:Any],
-              object["source"] as? String == "shadowrocket_native_rule_tester",
-              let checkedAt = object["checked_at"] as? Int,
-              (0...600).contains(Int(Date().timeIntervalSince1970) - checkedAt),
-              let rows = object["rules"] as? [[String:String]] else { return [] }
-        return rows.filter { !$0["host", default: ""].isEmpty && !$0["policy", default: ""].isEmpty }
-    }
     private func presentDashboard(tab: Int) {
         dashboardSelection = tab
         if let existing = dashboardWindow {
@@ -1271,7 +1145,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                                     color: .labelColor, frame: NSRect(x: 28, y: 578, width: 330, height: 31)))
         background.addSubview(label("ChatGPT · Codex · Computer Use", font: .systemFont(ofSize: 11.5),
                                     color: .secondaryLabelColor, frame: NSRect(x: 28, y: 556, width: 440, height: 18)))
-        let tabs = NSSegmentedControl(labels: ["总览", "时间线", "诊断", "节点", "设置"],
+        let tabs = NSSegmentedControl(labels: ["总览", "记录", "设置"],
                                       trackingMode: .selectOne,
                                       target: self, action: #selector(dashboardTabChanged(_:)))
         tabs.frame = NSRect(x: 27, y: 510, width: 566, height: 32)
@@ -1280,7 +1154,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         dashboardTabs = tabs
         let scroll = NSScrollView(frame: NSRect(x: 27, y: 32, width: 568, height: 463))
         scroll.scrollerStyle = .overlay
-        scroll.hasVerticalScroller = tab != 0
+        scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         background.addSubview(scroll)
@@ -1299,6 +1173,20 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         doc.addSubview(label(title, font: .systemFont(ofSize: 13.5, weight: .semibold),
                              color: .labelColor, frame: NSRect(x: 8, y: y, width: 500, height: 22)))
         y += 31
+    }
+
+    private func dashboardCompactRow(_ title: String, value: String,
+                                     in doc: NSView, y: inout CGFloat) {
+        doc.addSubview(label(title, font: .systemFont(ofSize: 12, weight: .medium),
+                             color: .secondaryLabelColor,
+                             frame: NSRect(x: 13, y: y + 6, width: 215, height: 20)))
+        doc.addSubview(label(value, font: .systemFont(ofSize: 12, weight: .semibold),
+                             color: .labelColor,
+                             frame: NSRect(x: 213, y: y + 6, width: 323, height: 20),
+                             alignment: .right))
+        doc.addSubview(AppearanceFillView(frame: NSRect(x: 13, y: y + 34, width: 522, height: 1),
+                                          color: .separatorColor.withAlphaComponent(0.23)))
+        y += 39
     }
 
     private func dashboardRow(_ title: String, explanation: String, value: String,
@@ -1347,29 +1235,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         card.addSubview(control)
         doc.addSubview(card)
         y += 83
-    }
-
-    private func probeLabel(_ key: String) -> String {
-        switch key {
-        case "chatgpt_edge": return "ChatGPT 公共入口"
-        case "chatgpt_websocket": return "ChatGPT WebSocket 域名"
-        case "codex_websocket": return "Codex WebSocket 域名"
-        case "openai_api_tls": return "OpenAI API TLS"
-        case "openai_auth_tls": return "OpenAI 登录 TLS"
-        case "chatgpt_desktop_tls": return "桌面关联域名 TLS"
-        default: return key
-        }
-    }
-    private func probeState(_ state: String) -> (String, NSColor) {
-        switch state {
-        case "reachable", "upgrade_accepted": return ("可达", .systemGreen)
-        case "tls_reachable_auth_or_path_unverified", "tls_reachable_path_unverified", "tls_reachable_not_authenticated":
-            return ("传输可达", .systemBlue)
-        case "transport_failed": return ("连接失败", .systemOrange)
-        case "http_response_with_transfer_error": return ("HTTP响应后中断", .systemOrange)
-        case "pending_or_stale": return ("等待更新", .secondaryLabelColor)
-        default: return ("待确认", .secondaryLabelColor)
-        }
     }
 
     private func workflowCard(_ key: String, title: String,
@@ -1600,12 +1465,10 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
     private func refreshDashboard() {
         guard let scroll = dashboardScroll, dashboardWindow != nil else { return }
         let previousY = scroll.contentView.bounds.origin.y
-        // The entire overview is a fixed, scroller-free viewport.
-        scroll.hasVerticalScroller = dashboardSelection != 0
+        // The overview also contains a concise connection path; allow scrolling.
+        scroll.hasVerticalScroller = true
         let doc = DashboardFlippedView(frame: NSRect(x: 0, y: 0, width: 558, height: 1250))
         var y: CGFloat = 8
-        let diagnostic = snapshot.deepConnection
-        let tests = diagnostic["targets"] as? [[String:Any]] ?? []
         switch dashboardSelection {
         case 0:
             overviewHero(in: doc, y: &y)
@@ -1626,6 +1489,20 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                                                 color: .separatorColor.withAlphaComponent(0.25)))
             doc.addSubview(panel)
             y += 180
+            dashboardHeading("当前连接路径", in: doc, y: &y)
+            let localEndpoint = snapshot.systemProxyEndpoint
+            let owner = snapshot.proxyClient == "shadowrocket" ? "Shadowrocket" :
+                        snapshot.proxyClient == "clash" ? "Clash" : "当前系统代理"
+            dashboardCompactRow("macOS 代理入口",
+                                value: localEndpoint.isEmpty ? "未识别" : owner + " · " + localEndpoint,
+                                in: doc, y: &y)
+            dashboardCompactRow("Codex / Work 入口", value: codexProxyEnvStatus(), in: doc, y: &y)
+            let edge = snapshot.fresh && snapshot.networkHealthy && snapshot.egressObserved
+                ? snapshot.egressIP + (snapshot.egressCountry.isEmpty ? "" : " · " + snapshot.egressCountry)
+                : "没有有效的公开出口采样"
+            dashboardCompactRow("公开测试请求出口", value: edge, in: doc, y: &y)
+            dashboardCompactRow("ChatGPT 实际节点", value: "暂无法确认", in: doc, y: &y)
+            dashboardNote("同一个本机代理入口不代表最终公网出口相同；当前没有 ChatGPT 请求级节点证据。", in: doc, y: &y)
             dashboardHeading("最近一次连接事件", in: doc, y: &y)
             let allEvents = snapshot.workflowTimeline["events"] as? [[String:Any]] ?? []
             let recent = allEvents.filter { ["codex_remote_session","codex_stream_error","client_log_issue","computer_use_invocation"].contains($0["kind"] as? String ?? "") }
@@ -1641,7 +1518,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                                         color: .labelColor, frame: NSRect(x: 17, y: 46, width: 435, height: 25)))
                 let summary = isRemote && ended
                     ? "持续 \(item["duration_seconds"] as? Int ?? 0) 秒 · 通过 Codex 客户端日志确认"
-                    : "有新的客户端状态记录，详情在时间线"
+                    : "有新的客户端状态记录，详情见记录"
                 latest.addSubview(label(summary, font: .systemFont(ofSize: 11.5),
                                         color: .secondaryLabelColor,
                                         frame: NSRect(x: 18, y: 25, width: 504, height: 20)))
@@ -1652,7 +1529,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                                         font: .systemFont(ofSize: 11), color: .secondaryLabelColor,
                                         frame: NSRect(x: 18, y: 24, width: 502, height: 19)))
             }
-            let go = NSButton(title: "打开时间线", target: self,
+            let go = NSButton(title: "查看记录", target: self,
                               action: #selector(openTimelineFromOverview(_:)))
             go.isBordered = false
             go.font = .systemFont(ofSize: 11.5, weight: .semibold)
@@ -1661,99 +1538,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             latest.addSubview(go)
             doc.addSubview(latest)
             y += 88
-        case 2:
-            dashboardHeading("Computer Use · 本机实测", in: doc, y: &y)
-            let cua = snapshot.computerUseObservation
-            let cuaBackend = cua["backend"] as? [String:Any] ?? [:]
-            let cuaExecution = cua["execution"] as? [String:Any] ?? [:]
-            let cuaRunning = (cuaBackend["state"] as? String) == "running"
-            dashboardRow("控制服务", explanation: "读取 Mac 进程状态，不能证明任务完成",
-                         value: cuaRunning && snapshot.fresh ? "进程在线" : "未核实在线",
-                         tone: cuaRunning && snapshot.fresh ? .systemBlue : .secondaryLabelColor,
-                         in: doc, y: &y)
-            let cuaReady = cuaBackend["startup_ready_at"] as? Int ?? 0
-            dashboardRow("浏览器后端", explanation: cuaReady > 0 ? "就绪日志时间：" + sampleClock(cuaReady) : "暂无就绪日志",
-                         value: cuaReady > 0 ? "曾记录就绪" : "未验证", in: doc, y: &y)
-            let cuaLast = cuaExecution["latest_at"] as? Int ?? 0
-            let cuaStatus = cuaExecution["latest_status"] as? String ?? ""
-            let cuaLabel = cuaStatus == "completed" ? "调用已完成" : cuaStatus == "failed" ? "调用失败" : "无完成记录"
-            dashboardRow("实际工具调用", explanation: cuaLast > 0 ? "本机调用记录：" + sampleClock(cuaLast) : "最近未找到本机执行证据",
-                         value: cuaLabel, in: doc, y: &y)
-            dashboardNote("仅本机 Codex 工具状态与时间。完成表示工具调用结束；云端操作和最终页面结果尚无法独立核准。", in: doc, y: &y)
-            dashboardHeading("ChatGPT · OpenAI", in: doc, y: &y)
-            let deepAt = diagnostic["checked_at"] as? Int ?? 0
-            dashboardNote(deepAt > 0 ? "深层探测采样：\(sampleClock(deepAt)) · 公开匿名检测，非已登录业务" :
-                          "深层探测暂无有效采样；以下结果不能代表当前 ChatGPT 会话",
-                          in: doc, y: &y)
-            if tests.isEmpty {
-                dashboardNote("分层探测正在等待首次结果。后台每约 5 分钟更新一次，不会登录账号或干预代理。", in: doc, y: &y)
-            } else {
-                for test in tests {
-                    let key = test["name"] as? String ?? "?"
-                    let state = test["state"] as? String ?? ""
-                    let result = probeState(state)
-                    let code = test["http_code"] as? Int ?? 0
-                    let ms = test["latency_ms"] as? Int ?? 0
-                    let isWebsocket = key == "chatgpt_websocket" || key == "codex_websocket"
-                    let method = isWebsocket ? "模拟 GET / + Upgrade（无登录）" :
-                        key == "chatgpt_edge" ? "GET /cdn-cgi/trace（公开入口）" :
-                        "GET /（匿名 TLS/HTTP）"
-                    let observed = test["observed_at"] as? Int ?? deepAt
-                    let explanation = "\(method) · HTTP \(code == 0 ? "—" : String(code)) · \(ms)ms · \(sampleClock(observed))"
-                    let display = isWebsocket && state != "upgrade_accepted"
-                        && ["tls_reachable_auth_or_path_unverified", "tls_reachable_path_unverified"].contains(state)
-                        ? ("仅 HTTP 有响应", NSColor.secondaryLabelColor) : result
-                    dashboardRow(probeLabel(key), explanation: explanation, value: display.0,
-                                 tone: display.1, in: doc, y: &y)
-                }
-            }
-            dashboardHeading("Codex 真实客户端记录", in: doc, y: &y)
-            let real = diagnostic["real_codex_client"] as? [String:Any] ?? [:]
-            let actualRoutes = real["routes"] as? [[String:Any]] ?? []
-            if actualRoutes.isEmpty {
-                dashboardNote("最近 30 分钟没有可确认的 Codex 实际业务 HTTP 请求记录。监控不会读取账号 Token 或自动发送业务 POST。", in: doc, y: &y)
-            }
-            for actual in actualRoutes.prefix(4) {
-                let method = actual["method"] as? String ?? "?"
-                let path = actual["path"] as? String ?? ""
-                let status = actual["status"] as? Int ?? 0
-                let count = actual["count"] as? Int ?? 0
-                let lastAt = actual["last_at"] as? Int ?? 0
-                dashboardRow("真实 Codex \(method)",
-                             explanation: path + " · 取自 Codex 只读日志 · " + sampleClock(lastAt),
-                             value: "HTTP \(status) · \(count) 次",
-                             tone: status >= 200 && status < 300 ? .systemGreen : .systemOrange,
-                             in: doc, y: &y)
-            }
-            let sockets = real["websocket"] as? [String:Any] ?? [:]
-            let connected = sockets["successful_connects"] as? Int ?? 0
-            dashboardRow("真实 Codex WS 连接日志", explanation: "30 分钟内客户端明确记录成功建立 WebSocket 的次数",
-                         value: "\(connected) 次", in: doc, y: &y)
-            dashboardHeading("Codex · 浏览器异常", in: doc, y: &y)
-            let stream = snapshot.codexStream
-            let counts = stream["recent_counts"] as? [String:Int] ?? [:]
-            let total = (counts["broken_pipe"] ?? 0) + (counts["websocket_handshake"] ?? 0) + (counts["connection_reset"] ?? 0)
-            dashboardRow("Codex 响应流日志", explanation: "最近 210 秒内 broken pipe / 握手 / 连接重置",
-                         value: (stream["state"] as? String) == "ok" ? "\(total) 次断流" : "日志不可用",
-                         tone: total > 0 ? .systemOrange : .secondaryLabelColor, in: doc, y: &y)
-            let browserCount = snapshot.issues.filter { $0.title.contains("浏览器控制") }.reduce(0) { $0 + $1.count }
-            dashboardRow("浏览器控制后端日志", explanation: "近 3 分钟已分类日志事件；未主动执行网页操作",
-                         value: "\(browserCount) 条相关提示", in: doc, y: &y)
-            dashboardNote("上方均为无登录的模拟探测，并非客户端实际接口请求。WebSocket 必须返回 101 才算成功升级；HTTP 403/404/421 仅表明服务器有响应。", in: doc, y: &y)
-            dashboardNote("上方真实客户端记录来自 Codex 自己写入的 SQLite 元数据；没有消息内容、身份令牌和额外请求。浏览器控制异常仍只是被动日志分类。", in: doc, y: &y)
-            dashboardHeading("其他 AI 网站 · 公开探测", in: doc, y: &y)
-            if !snapshot.aiMatrixFresh {
-                dashboardNote("AI 公开域名检测：暂无有效采样，不能代表当前业务健康。", in: doc, y: &y)
-            } else {
-                dashboardNote("公开域名检测采样：" + snapshot.aiMatrixCheckedAt +
-                              " · 仅供参考，不能证明账号登录或生成成功", in: doc, y: &y)
-            }
-            for site in snapshot.aiMatrixFresh ? snapshot.aiMatrixSites : [] {
-                dashboardRow(site.name, explanation: site.domain + (site.location.isEmpty ? "" : " · " + site.location),
-                             value: site.status == "reachable" ? "可达 · \(site.ms)ms" : "未确认",
-                             tone: site.status == "reachable" ? .systemGreen : .secondaryLabelColor,
-                             in: doc, y: &y)
-            }
         case 1:
             dashboardHeading("连接故障与恢复", in: doc, y: &y)
             dashboardNote("每次断线只显示一条记录。点开事件可查看尝试次数和日志依据。", in: doc, y: &y)
@@ -1806,72 +1590,37 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                 }
             }
             dashboardNote("连接恢复不等于模型任务已完成；无法从时间接近推定节点变化导致断线。", in: doc, y: &y)
-        case 3:
-            dashboardHeading("当前节点与规则", in: doc, y: &y)
-            dashboardNote("只展示真实的全局节点、出口和规则核验。当前未取得逐节点 GPT 业务成功证据，因此不提供节点排名。", in: doc, y: &y)
-            if snapshot.routeManagement == "system_proxy_observe_only" {
-                dashboardRow("系统 HTTPS 代理",
-                             explanation: "来自 macOS 当前系统设置；端口不是机场节点名",
-                             value: snapshot.systemProxyEndpoint.isEmpty ? "未知" : snapshot.systemProxyEndpoint,
-                             in: doc, y: &y)
-                dashboardRow("实际运营节点",
-                             explanation: "当前代理软件没有可验证的请求级节点接口",
-                             value: "无法读取，不作推测", in: doc, y: &y)
-            } else if snapshot.routeManagement == "clash_observe_only" {
-                dashboardRow("Clash 策略组选中", explanation: "Mihomo 官方 API 当前组内选择",
-                             value: snapshot.clashSelectedNode.isEmpty ? "暂无读取" : snapshot.clashSelectedNode,
-                             in: doc, y: &y)
-                dashboardRow("GPT 实际请求", explanation: "只有 Mihomo 活跃连接链能确认请求经过的节点",
-                             value: snapshot.backendVerified ? snapshot.actualBackendName : "未见可确认请求",
-                             in: doc, y: &y)
-            } else if snapshot.proxyClient == "shadowrocket" {
-                dashboardRow("Shadowrocket 全局选择", explanation: "仅作为全局节点记录，不表示 GPT 分组的选路",
-                             value: globalNode, in: doc, y: &y)
-                dashboardHeading("Shadowrocket 当前规则核验", in: doc, y: &y)
-                let ruleRows = recentNativeRuleAudit()
-                if ruleRows.isEmpty {
-                    dashboardNote("没有最近 10 分钟的配置规则核验结果。点击下方按钮，可以让 Shadowrocket 当前配置自行判断目标域名命中哪个策略。", in: doc, y: &y)
-                }
-                for rule in ruleRows {
-                    let host = rule["host"] ?? ""
-                    let policy = rule["policy"] ?? ""
-                    let selected = rule["selected"] ?? ""
-                    dashboardRow(host, explanation: "Shadowrocket 规则测试 · \(rule["rule_type"] ?? "") · 仅是规则匹配，不是抓取实际请求",
-                                 value: selected.isEmpty ? policy : "\(policy) · \(selected)", in: doc, y: &y)
-                }
-                let button=NSButton(frame: NSRect(x: 4, y: y, width: 275, height: 30))
-                button.title=ruleAuditRunning ? "正在通过 Shadowrocket 核验…" : "核验 Shadowrocket 当前配置规则"
-                button.bezelStyle = .rounded
-                button.isEnabled = !ruleAuditRunning
-                button.target = self
-                button.action = #selector(auditShadowrocketRules(_:))
-                doc.addSubview(button)
-                y += 39
-                dashboardNote("仅在你主动点击时短暂切换到 Shadowrocket 的“测试规则”界面；不读取账号凭证、不修改配置、不自动轮询。规则结果最多保留 10 分钟。", in: doc, y: &y)
-            } else {
-                dashboardRow("当前系统出站模式",
-                             explanation: "无显式代理可能意味着直连或 TUN，非节点验证",
-                             value: snapshot.systemProxyState == "direct_or_tun" ? "直连 / TUN" : "待解析",
-                             in: doc, y: &y)
-            }
-            dashboardHeading("网络出口与事件", in: doc, y: &y)
-            dashboardRow("本次观测出口", explanation: "Cloudflare 公共 trace，不能推断实际机场节点",
-                         value: shortEgress, in: doc, y: &y)
-            if snapshot.observedEgressHistory.isEmpty {
-                dashboardNote("近期没有经过两次成功验证的出口地区变化事件。", in: doc, y: &y)
-            }
-            for event in snapshot.observedEgressHistory.suffix(5).reversed() {
-                let before = event["geo_before"] as? String ?? "未知"
-                let after = event["geo_after"] as? String ?? "未知"
-                let when = event["observed_at"] as? String ?? ""
-                dashboardRow("出口地区变化", explanation: when, value: "\(before) → \(after)", in: doc, y: &y)
-            }
-            dashboardHeading("客户端事件", in: doc, y: &y)
-            if snapshot.issues.isEmpty { dashboardNote("近 3 分钟没有被分类为异常的客户端日志。", in: doc, y: &y) }
-            for issue in snapshot.issues.prefix(5) {
-                dashboardRow(issue.title, explanation: "客户端日志分类，不会直接触发节点切换",
-                             value: "\(issue.count) 条", tone: .systemOrange, in: doc, y: &y)
-            }
+            dashboardHeading("实际客户端证据", in: doc, y: &y)
+            let cua = snapshot.computerUseObservation
+            let backend = cua["backend"] as? [String:Any] ?? [:]
+            let execution = cua["execution"] as? [String:Any] ?? [:]
+            let serviceOnline = snapshot.fresh && (backend["state"] as? String) == "running"
+            let callAt = execution["latest_at"] as? Int ?? 0
+            let callStatus = execution["latest_status"] as? String ?? ""
+            dashboardRow("Computer Use", explanation: callAt > 0 ?
+                         "最近本机工具调用：\(sampleClock(callAt)) · 非云端任务证明" :
+                         "仅监测本机控制服务状态，无法验证云端操作",
+                         value: callAt > 0 ? (callStatus == "completed" ? "本机调用已结束" :
+                                              callStatus == "failed" ? "本机调用失败" : "未完成") :
+                                           serviceOnline ? "控制服务在线" : "未确认",
+                         in: doc, y: &y)
+            let streamCounts = snapshot.codexStream["recent_counts"] as? [String:Int] ?? [:]
+            let streamErrors = (streamCounts["broken_pipe"] ?? 0) +
+                               (streamCounts["websocket_handshake"] ?? 0) +
+                               (streamCounts["connection_reset"] ?? 0)
+            dashboardRow("Codex 响应流", explanation: "最近 210 秒的真实客户端连接错误；不据此自动切换节点",
+                         value: (snapshot.codexStream["state"] as? String) == "ok"
+                           ? "\(streamErrors) 次异常" : "日志未验证",
+                         tone: streamErrors > 0 ? .systemOrange : .secondaryLabelColor,
+                         in: doc, y: &y)
+            let client = snapshot.deepConnection["real_codex_client"] as? [String:Any] ?? [:]
+            let routes = client["routes"] as? [[String:Any]] ?? []
+            let success = routes.filter { ($0["status"] as? Int) == 200 }
+                                .reduce(0) { $0 + ($1["count"] as? Int ?? 0) }
+            dashboardRow("Codex 实际 HTTP 请求", explanation: "近 30 分钟客户端记录，不代表最终生成成功",
+                         value: routes.isEmpty ? "暂无可靠记录" : "\(success) 次 HTTP 200",
+                         in: doc, y: &y)
+            dashboardNote("公开测试、服务进程与客户端日志相互独立；只有真正的请求级归属才能确认机场节点。", in: doc, y: &y)
         default:
             dashboardHeading("Codex / Work 代理入口", in: doc, y: &y)
             dashboardRow("运行环境代理", explanation: "~/.codex/.env · 与桌面 .command 脚本兼容",
@@ -1896,10 +1645,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             y += 45
             dashboardNote("写入仅在手动确认后执行；现有 ChatGPT 会话不被中断。更改后请在合适时完全退出重开客户端。", in: doc, y: &y)
             dashboardHeading("自动化安全设置", in: doc, y: &y)
-            dashboardSwitch("自动节点控制", description: autoSwitchSupported ? "仅允许已验证的 GPT 独立分组" : "Shadowrocket 当前组无法证实，不开放自动切换",
-                            isOn: snapshot.automaticControlEnabled,
-                            canEdit: autoSwitchSupported && !configUpdateBusy,
-                            tag: 1, in: doc, y: &y)
             dashboardSwitch("隧道掉线重连", description: snapshot.proxyClient == "shadowrocket" ?
                             "Shadowrocket 隧道重连；不切换节点" :
                             "仅 Shadowrocket 可使用；其他代理仍正常接受监测",
@@ -1907,13 +1652,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                             canEdit: snapshot.proxyClient == "shadowrocket" && !configUpdateBusy,
                             tag: 2, in: doc, y: &y)
             dashboardNote("以上是真正的 macOS 系统滑动开关。不会因为打开监控中心就更改你的代理节点、规则或订阅。", in: doc, y: &y)
-            dashboardHeading("数据来源与限制", in: doc, y: &y)
-            dashboardRow("公共出口", explanation: "通过当前代理发起定时 HTTPS 探测",
-                         value: "正在监测", in: doc, y: &y)
-            dashboardRow("分组节点", explanation: "当前 Shadowrocket 未提供可持续验证的请求级节点",
-                         value: "不作为实时状态", in: doc, y: &y)
-            dashboardRow("Computer Use", explanation: "仅监测传输和已有日志；不做自动网页点击",
-                         value: "需要实际操作验收", in: doc, y: &y)
         }
         doc.frame = NSRect(x: 0, y: 0, width: 558, height: max(463, y + 18))
         scroll.documentView = doc
@@ -2003,20 +1741,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             """
         notice.addButton(withTitle:"知道了")
         notice.runModal()
-    }
-
-    @objc private func showShadowrocketLimits() {
-        let dlg=NSAlert()
-        dlg.messageText="Shadowrocket 自动节点控制未开放"
-        dlg.informativeText="""
-            当前只确认系统代理由 Shadowrocket 提供，没有可靠证据能证明
-            单次 ChatGPT / Codex 请求的实际节点与原生回退动作。
-
-            因此不通过历史节点名称猜测，也不自动修改已删除的分组。
-            可继续使用基础健康检测、Codex 代理入口同步和诊断日志。
-            """
-        dlg.addButton(withTitle:"知道了")
-        dlg.runModal()
     }
 
     @objc private func openRecoverySettings() {

@@ -32,10 +32,12 @@ class HonestMethodContract(unittest.TestCase):
   self.assertIn('process.arguments = ["kickstart", "-k", service]',setting)
   self.assertNotIn('runLaunchctl(',setting)
  def test_ui_discloses_synthetic_requests(self):
-  self.assertIn('模拟 GET / + Upgrade（无登录）',menu)
-  self.assertIn('Codex WebSocket 域名',menu)
-  self.assertIn('仅 HTTP 有响应',menu)
-  self.assertIn('取自 Codex 只读日志',menu)
-  self.assertIn('真实客户端记录',menu)
+  # Synthetic probes still exist in the passive backend but are no longer
+  # presented as actionable business success or a dedicated dashboard.
+  self.assertNotIn('模拟 GET / + Upgrade（无登录）',menu)
+  self.assertNotIn('Codex WebSocket 域名',menu)
+  self.assertIn('Codex 实际 HTTP 请求',menu)
+  self.assertIn('公开测试请求出口',menu)
+  self.assertIn('ChatGPT 实际节点',menu)
 
 if __name__=='__main__': unittest.main()

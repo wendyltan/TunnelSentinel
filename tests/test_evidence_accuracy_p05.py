@@ -94,9 +94,9 @@ class EvidenceAccuracyP05Tests(unittest.TestCase):
         src=Path(__file__).resolve().parents[1]/"menubar/TunnelSentinelMenu.swift"
         text=src.read_text()
         self.assertIn("测于",text)
-        self.assertIn("深层探测采样：",text)
+        self.assertIn("公开测试请求出口",text)
         self.assertIn("单次超时 · 复核中",text)
-        self.assertIn("取自 Codex 只读日志",text)
+        self.assertIn("Codex 实际 HTTP 请求",text)
         self.assertIn("networkReviewPending",text)
 
 if __name__=="__main__":

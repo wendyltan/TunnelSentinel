@@ -14,7 +14,7 @@ class MenuCompactStatusTests(unittest.TestCase):
         self.assertIn('width: w - 40, height: 18', menu)
         # The live AX menu and the custom card are each exactly 340pt wide.
         # Each right edge must land 20pt before the actual menu boundary.
-        self.assertIn('frame: NSRect(x: w - 98, y: 287, width: 78', menu)
+        self.assertIn('frame: NSRect(x: w - 98, y: 263, width: 78', menu)
         self.assertIn('width: w - 184, height: 19', menu)
         self.assertIn('width: w - 159, height: 19', menu)
         self.assertNotIn('width: view.bounds.width - 21', menu)

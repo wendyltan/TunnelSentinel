@@ -660,19 +660,19 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         // creates a hard top/bottom color seam and exposes a strip on the right
         // when a localized native menu command widens the menu. Keep the root
         // transparent so the SAME system menu material fills the entire panel.
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: 318))
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: 294))
         v.addSubview(label("T U N N E L   S E N T I N E L",
                            font: .systemFont(ofSize: 10, weight: .bold),
                            color: .tertiaryLabelColor,
-                           frame: NSRect(x: 20, y: 290, width: w - 140, height: 19)))
+                           frame: NSRect(x: 20, y: 266, width: w - 140, height: 19)))
         v.addSubview(badge(statusLabel, color: accent,
-                           frame: NSRect(x: w - 98, y: 287, width: 78, height: 22)))
+                           frame: NSRect(x: w - 98, y: 263, width: 78, height: 22)))
         v.addSubview(label(headline, font: .systemFont(ofSize: 19, weight: .semibold),
-                           color: .labelColor, frame: NSRect(x: 20, y: 253, width: w - 40, height: 27)))
+                           color: .labelColor, frame: NSRect(x: 20, y: 229, width: w - 40, height: 27)))
         v.addSubview(label(detail, font: .systemFont(ofSize: 11.5),
-                           color: .secondaryLabelColor, frame: NSRect(x: 20, y: 230, width: w - 40, height: 19)))
+                           color: .secondaryLabelColor, frame: NSRect(x: 20, y: 206, width: w - 40, height: 19)))
 
-        let nodeBox = AppearanceFillView(frame: NSRect(x: 18, y: 118, width: w - 36, height: 104),
+        let nodeBox = AppearanceFillView(frame: NSRect(x: 18, y: 94, width: w - 36, height: 104),
                                          color: .clear, cornerRadius: 10, surface: .menu)
         let hasRequestRoute = snapshot.fresh && snapshot.backendVerified &&
             !snapshot.actualBackendName.isEmpty && !snapshot.backendObservedAt.isEmpty
@@ -695,17 +695,17 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                                 frame: NSRect(x: 12, y: 9, width: nodeBox.bounds.width - 24, height: 23)))
         v.addSubview(nodeBox)
 
-        divider(112, in: v)
+        divider(88, in: v)
         v.addSubview(label("●", font: .systemFont(ofSize: 13),
                            color: networkReviewPending ? .systemOrange :
                                   snapshot.networkHealthy ? .systemGreen : .systemRed,
-                           frame: NSRect(x: 20, y: 88, width: 16, height: 19)))
+                           frame: NSRect(x: 20, y: 64, width: 16, height: 19)))
         v.addSubview(label("基础链路", font: .systemFont(ofSize: 12, weight: .medium), color: .labelColor,
-                           frame: NSRect(x: 40, y: 88, width: 126, height: 19)))
+                           frame: NSRect(x: 40, y: 64, width: 126, height: 19)))
         v.addSubview(label(networkReviewPending ? "单次超时 · 复核中" :
                            snapshot.fresh && snapshot.networkHealthy ? "公共入口可达" : "待确认 / 不可达",
                            font: .systemFont(ofSize: 11), color: .secondaryLabelColor,
-                           frame: NSRect(x: 164, y: 88, width: w - 184, height: 19), alignment: .right))
+                           frame: NSRect(x: 164, y: 64, width: w - 184, height: 19), alignment: .right))
 
         let issueText: String
         if !snapshot.fresh {
@@ -716,13 +716,13 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             issueText = snapshot.issues.prefix(2).map { "\($0.title) ×\($0.count)" }.joined(separator: " · ")
         }
         v.addSubview(label("●", font: .systemFont(ofSize: 13), color: snapshot.issues.isEmpty ? .secondaryLabelColor : .systemOrange,
-                           frame: NSRect(x: 20, y: 62, width: 16, height: 19)))
+                           frame: NSRect(x: 20, y: 38, width: 16, height: 19)))
         v.addSubview(label("客户端诊断", font: .systemFont(ofSize: 12, weight: .medium),
-                           color: .labelColor, frame: NSRect(x: 40, y: 62, width: 105, height: 19)))
+                           color: .labelColor, frame: NSRect(x: 40, y: 38, width: 105, height: 19)))
         v.addSubview(label(issueText, font: .systemFont(ofSize: 10.5), color: .secondaryLabelColor,
-                           frame: NSRect(x: 139, y: 62, width: w - 159, height: 19), alignment: .right))
+                           frame: NSRect(x: 139, y: 38, width: w - 159, height: 19), alignment: .right))
 
-        divider(50, in: v)
+        // No divider above the footer: the line belongs to the status block.
         let timeText = snapshot.checkedAt.count >= 19
             ? String(snapshot.checkedAt.dropFirst(11).prefix(8)) : "—"
         let recoveryText = recoveryBlocked && snapshot.recoveryRetrySeconds > 0
@@ -730,7 +730,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             : " · 系统代理监测"
         v.addSubview(label("最近检测 \(timeText)\(recoveryText)",
                            font: .systemFont(ofSize: 10), color: .tertiaryLabelColor,
-                           frame: NSRect(x: 20, y: 24, width: w - 40, height: 18)))
+                           frame: NSRect(x: 20, y: 12, width: w - 40, height: 18)))
         return v
     }
 
@@ -1548,21 +1548,16 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                             ? (uploadKBps < 80 ? .systemOrange : .secondaryLabelColor)
                             : .secondaryLabelColor,
                          in: doc, y: &y)
-            let uploadButton = NSButton(title: "", target: self, action: #selector(forceUploadProbe))
-            uploadButton.isBordered = false
-            uploadButton.wantsLayer = true
-            uploadButton.layer?.cornerRadius = 7
-            uploadButton.layer?.borderWidth = 1
+            let uploadButton = NSButton(title: uploadRunning ? "测速中…" : "立即测上行",
+                                        target: self, action: #selector(forceUploadProbe))
+            uploadButton.bezelStyle = .rounded
+            uploadButton.controlSize = .small
+            uploadButton.font = .systemFont(ofSize: 11)
+            uploadButton.image = NSImage(systemSymbolName: uploadRunning ? "hourglass" : "arrow.up.circle",
+                                         accessibilityDescription: nil)
+            uploadButton.imagePosition = .imageLeading
             uploadButton.isEnabled = !uploadRunning
-            let tint: NSColor = uploadRunning ? .tertiaryLabelColor : .controlAccentColor
-            uploadButton.layer?.backgroundColor = tint.withAlphaComponent(0.12).cgColor
-            uploadButton.layer?.borderColor = tint.withAlphaComponent(uploadRunning ? 0.15 : 0.32).cgColor
-            uploadButton.attributedTitle = NSAttributedString(
-                string: uploadRunning ? "◌  测速中…" : "↑  立即测上行",
-                attributes: [.font: NSFont.systemFont(ofSize: 11.5, weight: .semibold),
-                             .foregroundColor: tint])
-            uploadButton.setAccessibilityLabel(uploadRunning ? "测速中" : "立即测上行")
-            uploadButton.frame = NSRect(x: 13, y: y - 1, width: 128, height: 25)
+            uploadButton.frame = NSRect(x: 11, y: y - 1, width: 132, height: 26)
             uploadButton.toolTip = "立即实测一次上行带宽（约 30 秒）"
             doc.addSubview(uploadButton)
             y += 30

@@ -24,7 +24,10 @@ cp "$source_dir/scripts/codex_business_observer.py" "$install_dir/codex_business
 chmod 700 "$install_dir/codex_business_observer.py"
 cp "$source_dir/scripts/codex_stream_health.py" "$install_dir/codex_stream_health.py"
 cp "$source_dir/scripts/codex_remote_control.py" "$install_dir/codex_remote_control.py"
-chmod 700 "$install_dir/codex_stream_health.py" "$install_dir/codex_remote_control.py"
+cp "$source_dir/scripts/upload_probe.py" "$install_dir/upload_probe.py"
+cp "$source_dir/scripts/shadowrocket_node.py" "$install_dir/shadowrocket_node.py"
+chmod 700 "$install_dir/codex_stream_health.py" "$install_dir/codex_remote_control.py" \
+         "$install_dir/upload_probe.py" "$install_dir/shadowrocket_node.py"
 cp "$source_dir/scripts/clash_openai_profile.py" "$install_dir/clash_openai_profile.py"
 cp "$source_dir/scripts/clash_failover.py" "$install_dir/clash_failover.py"
 chmod 700 "$install_dir/clash_openai_profile.py" "$install_dir/clash_failover.py"

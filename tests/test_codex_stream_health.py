@@ -4,11 +4,14 @@ import json
 import logging
 from pathlib import Path
 import sqlite3
+import sys
 import tempfile
 import time
 import unittest
 from unittest import mock
 import openai_link_guardian as guardian
+
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"scripts"))
 
 SPEC=importlib.util.spec_from_file_location(
     "codex_stream_monitor", Path(__file__).resolve().parents[1]/"scripts/codex_stream_health.py")
@@ -39,12 +42,38 @@ class CodexStreamTests(unittest.TestCase):
             ])
             c.commit();c.close()
             out=health.scan(p,now)
-            self.assertEqual(out["counts"],{"broken_pipe":1,"websocket_handshake":1,"connection_reset":1})
+            self.assertEqual(out["counts"],{"broken_pipe":1,"websocket_handshake":1,
+                                            "connection_reset":1,"ws_closed_after_upgrade":0,
+                                            "http_fallbacks":0})
+            self.assertEqual(out["classification"],"stream_failing")
             self.assertEqual(out["last_at"],now-5)
             self.assertEqual(out["recent_counts"],out["counts"])
             self.assertNotIn("SECRET_PROMPT",json.dumps(out))
             self.assertNotIn("SECRET_KEY",json.dumps(out))
             self.assertNotIn("account sensitive",json.dumps(out))
+
+    def test_ws_upgraded_then_closed_is_degraded_not_healthy(self):
+        """The 2026-10-30 anomaly: 101 succeeded, session died, Codex fell back."""
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/"codex.sqlite"
+            c=sqlite3.connect(p)
+            c.execute("create table logs(id integer primary key,ts integer,target text, feedback_log_body text)")
+            now=int(time.time())
+            c.executemany("insert into logs(ts,target,feedback_log_body) values (?,?,?)",[
+                (now-8,"codex_api::endpoint::responses_websocket",
+                 "successfully connected to Responses WebSocket status=101"),
+                (now-6,"codex_core::client",
+                 'non-incremental request reason="connection_closed"'),
+                (now-4,"codex_core::client","falling back to HTTP"),
+            ])
+            c.commit();c.close()
+            out=health.scan(p,now)
+            self.assertEqual(out["ws_upgrades_ok"],1)
+            self.assertEqual(out["counts"]["ws_closed_after_upgrade"],1)
+            self.assertEqual(out["counts"]["http_fallbacks"],1)
+            self.assertEqual(out["classification"],"ws_degraded")
+            # A dead node would not produce a successful upgrade; this is not a proxy verdict.
+            self.assertNotIn("node",json.dumps(out).lower())
 
     def test_missing_db_is_unavailable_not_healthy(self):
         with tempfile.TemporaryDirectory() as d:

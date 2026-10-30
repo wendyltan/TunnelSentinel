@@ -37,6 +37,10 @@ private struct Snapshot {
     var tunnelRecoveryEnabled = false
     var deepConnection: [String: Any] = [:]
     var codexStream: [String: Any] = [:]
+    var uploadProbe: [String: Any] = [:]
+    var uploadNodeHistory: [[String: Any]] = []
+    var uploadAdvice: [String: Any] = [:]
+    var shadowrocketNode: [String: Any] = [:]
     var workflowHealth: [String: Any] = [:]
     var computerUseObservation: [String: Any] = [:]
     var clientEventCorrelation: [String: Any] = [:]
@@ -326,6 +330,10 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         }
         next.deepConnection = values["deep_connection_diagnostics"] as? [String:Any] ?? [:]
         next.codexStream = values["codex_stream_diagnostics"] as? [String:Any] ?? [:]
+        next.uploadProbe = values["upload_probe"] as? [String:Any] ?? [:]
+        next.uploadNodeHistory = values["upload_node_history"] as? [[String:Any]] ?? []
+        next.uploadAdvice = values["upload_recommendation"] as? [String:Any] ?? [:]
+        next.shadowrocketNode = values["shadowrocket_node"] as? [String:Any] ?? [:]
         next.workflowHealth = values["workflow_health"] as? [String:Any] ?? [:]
         next.computerUseObservation = values["computer_use_observation"] as? [String:Any] ?? [:]
         next.clientEventCorrelation = values["client_event_correlation"] as? [String:Any] ?? [:]
@@ -652,7 +660,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         // creates a hard top/bottom color seam and exposes a strip on the right
         // when a localized native menu command widens the menu. Keep the root
         // transparent so the SAME system menu material fills the entire panel.
-        let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: 326))
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: 318))
         v.addSubview(label("T U N N E L   S E N T I N E L",
                            font: .systemFont(ofSize: 10, weight: .bold),
                            color: .tertiaryLabelColor,
@@ -664,7 +672,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         v.addSubview(label(detail, font: .systemFont(ofSize: 11.5),
                            color: .secondaryLabelColor, frame: NSRect(x: 20, y: 230, width: w - 40, height: 19)))
 
-        let nodeBox = AppearanceFillView(frame: NSRect(x: 18, y: 114, width: w - 36, height: 106),
+        let nodeBox = AppearanceFillView(frame: NSRect(x: 18, y: 118, width: w - 36, height: 104),
                                          color: .clear, cornerRadius: 10, surface: .menu)
         let hasRequestRoute = snapshot.fresh && snapshot.backendVerified &&
             !snapshot.actualBackendName.isEmpty && !snapshot.backendObservedAt.isEmpty
@@ -687,17 +695,17 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                                 frame: NSRect(x: 12, y: 9, width: nodeBox.bounds.width - 24, height: 23)))
         v.addSubview(nodeBox)
 
-        divider(105, in: v)
+        divider(112, in: v)
         v.addSubview(label("●", font: .systemFont(ofSize: 13),
                            color: networkReviewPending ? .systemOrange :
                                   snapshot.networkHealthy ? .systemGreen : .systemRed,
-                           frame: NSRect(x: 20, y: 78, width: 16, height: 19)))
+                           frame: NSRect(x: 20, y: 88, width: 16, height: 19)))
         v.addSubview(label("基础链路", font: .systemFont(ofSize: 12, weight: .medium), color: .labelColor,
-                           frame: NSRect(x: 40, y: 78, width: 126, height: 19)))
+                           frame: NSRect(x: 40, y: 88, width: 126, height: 19)))
         v.addSubview(label(networkReviewPending ? "单次超时 · 复核中" :
                            snapshot.fresh && snapshot.networkHealthy ? "公共入口可达" : "待确认 / 不可达",
                            font: .systemFont(ofSize: 11), color: .secondaryLabelColor,
-                           frame: NSRect(x: 164, y: 78, width: w - 184, height: 19), alignment: .right))
+                           frame: NSRect(x: 164, y: 88, width: w - 184, height: 19), alignment: .right))
 
         let issueText: String
         if !snapshot.fresh {
@@ -708,13 +716,13 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             issueText = snapshot.issues.prefix(2).map { "\($0.title) ×\($0.count)" }.joined(separator: " · ")
         }
         v.addSubview(label("●", font: .systemFont(ofSize: 13), color: snapshot.issues.isEmpty ? .secondaryLabelColor : .systemOrange,
-                           frame: NSRect(x: 20, y: 54, width: 16, height: 19)))
+                           frame: NSRect(x: 20, y: 62, width: 16, height: 19)))
         v.addSubview(label("客户端诊断", font: .systemFont(ofSize: 12, weight: .medium),
-                           color: .labelColor, frame: NSRect(x: 40, y: 54, width: 105, height: 19)))
+                           color: .labelColor, frame: NSRect(x: 40, y: 62, width: 105, height: 19)))
         v.addSubview(label(issueText, font: .systemFont(ofSize: 10.5), color: .secondaryLabelColor,
-                           frame: NSRect(x: 139, y: 54, width: w - 159, height: 19), alignment: .right))
+                           frame: NSRect(x: 139, y: 62, width: w - 159, height: 19), alignment: .right))
 
-        divider(43, in: v)
+        divider(50, in: v)
         let timeText = snapshot.checkedAt.count >= 19
             ? String(snapshot.checkedAt.dropFirst(11).prefix(8)) : "—"
         let recoveryText = recoveryBlocked && snapshot.recoveryRetrySeconds > 0
@@ -722,7 +730,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
             : " · 系统代理监测"
         v.addSubview(label("最近检测 \(timeText)\(recoveryText)",
                            font: .systemFont(ofSize: 10), color: .tertiaryLabelColor,
-                           frame: NSRect(x: 20, y: 17, width: w - 40, height: 18)))
+                           frame: NSRect(x: 20, y: 24, width: w - 40, height: 18)))
         return v
     }
 
@@ -807,6 +815,7 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(menuItem("打开监控中心…", symbol: "rectangle.grid.1x2", action: #selector(openDashboard)))
         menu.addItem(menuItem("立即检测基础链路", symbol: "arrow.clockwise", action: #selector(forceProbe)))
+        menu.addItem(menuItem("立即测上行", symbol: "arrow.up.circle", action: #selector(forceUploadProbe)))
         if snapshot.proxyClient == "shadowrocket" {
             menu.addItem(.separator())
             menu.addItem(switchMenuRow("Shadowrocket 隧道重连",
@@ -842,6 +851,18 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
         requestProbe()
         refreshStatus()
         refreshNode()
+    }
+
+    /// Drop a one-shot flag the background guardian consumes on its next cycle.
+    @objc private func forceUploadProbe() {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/OpenAILinkGuardian")
+        let flag = dir.appendingPathComponent("upload_probe.request")
+        do {
+            try "requested-by-menu".write(to: flag, atomically: true, encoding: .utf8)
+        } catch {
+            showError("无法请求上行测速：\(error.localizedDescription)")
+        }
     }
 
     private func showError(_ text: String) {
@@ -1510,6 +1531,92 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                              value: snapshot.actualBackendName,
                              in: doc, y: &y)
             }
+            // 上行带宽 belongs with the connection path: latency and download
+            // speed do not predict whether a multi-megabyte request can be sent.
+            let uploadKBps = snapshot.uploadProbe["kbps"] as? Double
+                          ?? (snapshot.uploadProbe["kbps"] as? NSNumber)?.doubleValue ?? 0
+            let uploadState = snapshot.uploadProbe["state"] as? String ?? "off"
+            let uploadRunning = (snapshot.uploadProbe["running"] as? Bool) ?? false
+            dashboardRow("上行带宽",
+                         explanation: uploadRunning
+                            ? "正在实测上传速率（约 30 秒）"
+                            : "实测上传速率；决定大上下文的 Codex 请求能否按时发完，低延迟不等于高上行",
+                         value: uploadRunning ? "测量中…" : (uploadState == "ok"
+                            ? String(format: "%.0f KB/s", uploadKBps)
+                            : (uploadState == "pending_or_stale" ? "待测" : "未测量")),
+                         tone: uploadState == "ok"
+                            ? (uploadKBps < 80 ? .systemOrange : .secondaryLabelColor)
+                            : .secondaryLabelColor,
+                         in: doc, y: &y)
+            let uploadButton = NSButton(title: "", target: self, action: #selector(forceUploadProbe))
+            uploadButton.isBordered = false
+            uploadButton.wantsLayer = true
+            uploadButton.layer?.cornerRadius = 7
+            uploadButton.layer?.borderWidth = 1
+            uploadButton.isEnabled = !uploadRunning
+            let tint: NSColor = uploadRunning ? .tertiaryLabelColor : .controlAccentColor
+            uploadButton.layer?.backgroundColor = tint.withAlphaComponent(0.12).cgColor
+            uploadButton.layer?.borderColor = tint.withAlphaComponent(uploadRunning ? 0.15 : 0.32).cgColor
+            uploadButton.attributedTitle = NSAttributedString(
+                string: uploadRunning ? "◌  测速中…" : "↑  立即测上行",
+                attributes: [.font: NSFont.systemFont(ofSize: 11.5, weight: .semibold),
+                             .foregroundColor: tint])
+            uploadButton.setAccessibilityLabel(uploadRunning ? "测速中" : "立即测上行")
+            uploadButton.frame = NSRect(x: 13, y: y - 1, width: 128, height: 25)
+            uploadButton.toolTip = "立即实测一次上行带宽（约 30 秒）"
+            doc.addSubview(uploadButton)
+            y += 30
+            let streamCounts = snapshot.codexStream["recent_counts"] as? [String:Int] ?? [:]
+            let streamErrors = (streamCounts["broken_pipe"] ?? 0) +
+                               (streamCounts["websocket_handshake"] ?? 0) +
+                               (streamCounts["connection_reset"] ?? 0) +
+                               (streamCounts["ws_closed_after_upgrade"] ?? 0)
+            let wsDegraded = (snapshot.codexStream["classification"] as? String) == "ws_degraded"
+                          || (streamCounts["http_fallbacks"] ?? 0) > 0
+            dashboardRow("Codex 响应流",
+                         explanation: wsDegraded
+                            ? "WebSocket 握手成功后随即断开，Codex 已自动回退 HTTP；与代理节点无关，不据此切换节点"
+                            : "最近 210 秒的真实客户端连接错误；不据此自动切换节点",
+                         value: (snapshot.codexStream["state"] as? String) == "ok"
+                            ? (wsDegraded ? "WS 异常，已回退 HTTP" : "\(streamErrors) 次异常")
+                            : "日志未验证",
+                         tone: (wsDegraded || streamErrors > 0) ? .systemOrange : .secondaryLabelColor,
+                         in: doc, y: &y)
+            if !snapshot.uploadNodeHistory.isEmpty {
+                dashboardHeading("节点上行排行", in: doc, y: &y)
+                if (snapshot.uploadAdvice["state"] as? String) == "switch_recommended" {
+                    let country = snapshot.uploadAdvice["country"] as? String ?? ""
+                    let colo = snapshot.uploadAdvice["colo"] as? String ?? ""
+                    let kbps = (snapshot.uploadAdvice["best_kbps"] as? NSNumber)?.doubleValue ?? 0
+                    dashboardRow("建议切换出口",
+                                 explanation: "按实测上行排序；切换后自动重新记录。按出口 IP 归档，不是订阅节点名",
+                                 value: country + (colo.isEmpty ? "" : " · " + colo)
+                                      + String(format: " · %.0f KB/s", kbps),
+                                 tone: .systemGreen, in: doc, y: &y)
+                }
+                for entry in snapshot.uploadNodeHistory.prefix(3) {
+                    let country = entry["country"] as? String ?? "?"
+                    let colo = entry["colo"] as? String ?? ""
+                    let kbps = (entry["kbps"] as? NSNumber)?.doubleValue ?? 0
+                    let bestKbps = (entry["best_kbps"] as? NSNumber)?.doubleValue ?? 0
+                    let at = entry["at"] as? Int ?? 0
+                    let isCurrent = (entry["ip"] as? String ?? "") == snapshot.egressIP
+                    var detail = "最近实测 " + sampleClock(at) + " · 出口 "
+                               + (entry["ip"] as? String ?? "")
+                    if bestKbps > kbps * 1.2 {
+                        detail += String(format: " · 历史最好 %.0f KB/s", bestKbps)
+                    }
+                    let nodeName = entry["node"] as? String ?? ""
+                    let title = nodeName.isEmpty
+                        ? country + (colo.isEmpty ? "" : " · " + colo)
+                        : nodeName
+                    dashboardRow((isCurrent ? "当前 · " : "") + title,
+                                 explanation: detail,
+                                 value: String(format: "%.0f KB/s", kbps),
+                                 tone: kbps < 80 ? .systemOrange : .secondaryLabelColor,
+                                 in: doc, y: &y)
+                }
+            }
             dashboardHeading("最近一次连接事件", in: doc, y: &y)
             let allEvents = snapshot.workflowTimeline["events"] as? [[String:Any]] ?? []
             let recent = allEvents.filter { ["codex_remote_session","codex_stream_error","client_log_issue","computer_use_invocation"].contains($0["kind"] as? String ?? "") }
@@ -1610,15 +1717,6 @@ final class TunnelSentinelMenu: NSObject, NSApplicationDelegate {
                          value: callAt > 0 ? (callStatus == "completed" ? "本机调用已结束" :
                                               callStatus == "failed" ? "本机调用失败" : "未完成") :
                                            serviceOnline ? "控制服务在线" : "未确认",
-                         in: doc, y: &y)
-            let streamCounts = snapshot.codexStream["recent_counts"] as? [String:Int] ?? [:]
-            let streamErrors = (streamCounts["broken_pipe"] ?? 0) +
-                               (streamCounts["websocket_handshake"] ?? 0) +
-                               (streamCounts["connection_reset"] ?? 0)
-            dashboardRow("Codex 响应流", explanation: "最近 210 秒的真实客户端连接错误；不据此自动切换节点",
-                         value: (snapshot.codexStream["state"] as? String) == "ok"
-                           ? "\(streamErrors) 次异常" : "日志未验证",
-                         tone: streamErrors > 0 ? .systemOrange : .secondaryLabelColor,
                          in: doc, y: &y)
             let client = snapshot.deepConnection["real_codex_client"] as? [String:Any] ?? [:]
             let routes = client["routes"] as? [[String:Any]] ?? []

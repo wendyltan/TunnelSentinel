@@ -36,6 +36,97 @@ DEFAULT_CONFIG = DEFAULT_HOME / "config.json"
 DEFAULT_STATUS = DEFAULT_HOME / "status.json"
 DEFAULT_LOG_DIR = Path.home() / "Library" / "Logs" / APP_NAME
 CODEX_LOG_ROOT = Path.home() / "Library" / "Logs" / "com.openai.codex"
+UPLOAD_HISTORY_PATH = DEFAULT_HOME / "upload_node_history.json"
+UPLOAD_HISTORY_MAX_ENTRIES = 20
+
+
+def _load_upload_history(path: Path = UPLOAD_HISTORY_PATH) -> list:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        entries = data.get("entries")
+        if isinstance(entries, list):
+            return [e for e in entries if isinstance(e, dict)]
+    except (OSError, ValueError, TypeError):
+        pass
+    return []
+
+
+def _save_upload_history(entries: list, path: Path = UPLOAD_HISTORY_PATH) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"source": "upload_node_history_v1", "entries": entries},
+                              ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def record_upload_sample(ip: str, country: str, colo: str, kbps: float, at: int,
+                         path: Path = UPLOAD_HISTORY_PATH, now: float | None = None,
+                         max_age: float = 14 * 86400, node: str = "") -> list:
+    """Remember measured uplink per node, falling back to the exit when unnamed.
+
+    The selected server name is read from a bounded child process; when it is
+    unavailable the entry is still useful, keyed by its exit IP and country.
+    """
+    node = (node or "").strip()[:120]
+    now = time.time() if now is None else now
+    entries = [e for e in _load_upload_history(path)
+               if 0 <= now - int(e.get("at", 0) or 0) <= max_age]
+    rate = round(float(kbps), 1)
+    for entry in entries:
+        if node:
+            same = entry.get("node") == node
+        else:
+            same = ((entry.get("ip"), entry.get("country")) == (ip, country)
+                    and not entry.get("node"))
+        if same:
+            if int(entry.get("at", 0) or 0) == int(at):
+                # Status is written every ~10s; the same measurement must not be
+                # counted (or re-written) more than once.
+                return entries
+            entry.update({"colo": colo, "kbps": rate, "at": int(at), "ip": ip,
+                          "country": country, "node": node,
+                          "samples": int(entry.get("samples", 0) or 0) + 1,
+                          "best_kbps": max(float(entry.get("best_kbps", 0) or 0), rate)})
+            break
+    else:
+        entries.append({"ip": ip, "country": country, "colo": colo, "node": node,
+                        "kbps": rate, "best_kbps": rate, "at": int(at), "samples": 1})
+    entries.sort(key=lambda e: float(e.get("kbps", 0) or 0), reverse=True)
+    entries = entries[:UPLOAD_HISTORY_MAX_ENTRIES]
+    try:
+        _save_upload_history(entries, path)
+    except OSError:
+        pass
+    return entries
+
+
+def upload_recommendation(entries: list, current: dict, observed, low_kbps: float = 80.0) -> dict:
+    """Advisory only. Never a trigger for changing routes."""
+    outcome = {"state": "no_advice", "identity": "exit_ip_not_subscription_name"}
+    cur_ip = getattr(observed, "egress_ip", "") or ""
+    current_kbps = 0.0
+    for entry in entries:
+        if entry.get("ip") == cur_ip:
+            current_kbps = float(entry.get("kbps", 0) or 0)
+            break
+    if not current_kbps:
+        current_kbps = float(current.get("kbps", 0) or 0)
+    best = None
+    for entry in entries:
+        if entry.get("ip") == cur_ip:
+            continue
+        rate = float(entry.get("kbps", 0) or 0)
+        if rate < low_kbps:
+            continue
+        if best is None or rate > float(best.get("kbps", 0) or 0):
+            best = entry
+    if best and current_kbps > 0 and float(best["kbps"]) >= current_kbps * 1.5:
+        outcome.update(state="switch_recommended", current_kbps=round(current_kbps, 1),
+                       best_kbps=float(best["kbps"]), country=best.get("country", ""),
+                       colo=best.get("colo", ""), ip=best.get("ip", ""),
+                       at=int(best.get("at", 0) or 0))
+    return outcome
 SHADOWROCKET_PREF_DOMAIN = (
     Path.home()
     / "Library/Group Containers/group.com.liguangming.Shadowrocket/Library/Preferences"
@@ -71,6 +162,12 @@ DEFAULTS = {
     "automatic_control_enabled": False,
     "deep_connection_probe_enabled": True,
     "deep_connection_probe_interval_seconds": 300,
+    # Measured uplink throughput. Latency and download speed do NOT predict
+    # whether a multi-megabyte Codex request can be uploaded at all.
+    "upload_probe_enabled": False,
+    "upload_probe_interval_seconds": 900,
+    "upload_probe_url": "https://postman-echo.com/post",
+    "upload_probe_size_bytes": 1048576,
     # Supplemental public, unauthenticated AI-domain trace checks; never own
     # node selection and never escalate rate limits/geo lookups to a failure.
     "ai_matrix_enabled": False,
@@ -711,6 +808,14 @@ class Guardian:
         self.deep_probe_running = False
         self.deep_probe_last_run = 0.0
         self.deep_probe_result: dict = {}
+        self.upload_probe_lock = threading.Lock()
+        self.upload_probe_running = False
+        self.upload_probe_last_run = 0.0
+        self.upload_probe_result: dict = {}
+        self.node_name_lock = threading.Lock()
+        self.node_name_running = False
+        self.node_name_last_run = 0.0
+        self.node_name_result: dict = {}
         self.native_log_lock = threading.Lock()
         self.native_log_last_run_at = 0.0
         self.native_log_running = False
@@ -852,6 +957,83 @@ class Guardian:
         threading.Thread(target=self._deep_probe_worker,
                          args=(self.route_generation,str(self.config["proxy"])),
                          daemon=True,name="GPTAndCodexLayeredReadOnlyProbe").start()
+
+    def _upload_probe_worker(self, proxy: str) -> None:
+        helper = DEFAULT_HOME / "upload_probe.py"
+        outcome = {"source": "bounded_upload_probe", "state": "unavailable", "kbps": 0.0}
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(helper), proxy,
+                 str(self.config.get("upload_probe_url", "https://postman-echo.com/post"))],
+                capture_output=True, text=True, check=False, timeout=90)
+            if proc.returncode == 0:
+                parsed = json.loads(proc.stdout)
+                if parsed.get("source") == "bounded_upload_probe":
+                    outcome = parsed
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            pass
+        finally:
+            with self.upload_probe_lock:
+                self.upload_probe_result = outcome
+                self.upload_probe_running = False
+
+    def _consume_upload_request(self) -> bool:
+        """A menu click drops a one-shot flag file; consume it exactly once."""
+        try:
+            request = DEFAULT_HOME / "upload_probe.request"
+            if request.exists():
+                request.unlink()
+                return True
+        except OSError:
+            pass
+        return False
+
+    def maybe_begin_upload_probe(self) -> None:
+        """Measure real uplink. Bounded, throttled, never a switch trigger."""
+        if not self.config.get("upload_probe_enabled", False):
+            return
+        now = time.monotonic()
+        interval = max(300, int(self.config.get("upload_probe_interval_seconds", 900)))
+        with self.upload_probe_lock:
+            if self.upload_probe_running:
+                # Leave a pending manual request in place for the next cycle.
+                return
+            forced = self._consume_upload_request()
+            if not forced and now - self.upload_probe_last_run < interval:
+                return
+            self.upload_probe_running = True
+            self.upload_probe_last_run = now
+        threading.Thread(target=self._upload_probe_worker,
+                         args=(str(self.config.get("proxy", "")),),
+                         daemon=True, name="UploadThroughputProbe").start()
+
+    def _node_name_worker(self) -> None:
+        # Protected Group Container: always through a bounded child process.
+        helper = DEFAULT_HOME / "shadowrocket_node.py"
+        outcome = {"source": "shadowrocket_selected_server", "state": "unavailable", "name": ""}
+        try:
+            proc = subprocess.run([sys.executable, str(helper)], capture_output=True,
+                                  text=True, check=False, timeout=2.5)
+            if proc.returncode == 0:
+                parsed = json.loads(proc.stdout)
+                if parsed.get("source") == "shadowrocket_selected_server":
+                    outcome = parsed
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            pass
+        finally:
+            with self.node_name_lock:
+                self.node_name_result = outcome
+                self.node_name_running = False
+
+    def maybe_begin_node_name(self) -> None:
+        now = time.monotonic()
+        with self.node_name_lock:
+            if self.node_name_running or now - self.node_name_last_run < 60:
+                return
+            self.node_name_running = True
+            self.node_name_last_run = now
+        threading.Thread(target=self._node_name_worker, daemon=True,
+                         name="ShadowrocketNodeNameReader").start()
 
     def _native_proxy_log_worker(self) -> None:
         # The guard process NEVER opens the protected Shadowrocket directory.
@@ -1269,15 +1451,22 @@ class Guardian:
         with self.codex_stream_lock:
             stream_info = dict(self.codex_stream_result)
         counts = stream_info.get("counts") or {}
+        # ws_closed_after_upgrade counts a WebSocket that upgraded (101) and then
+        # died. It is a display/business signal only; it is deliberately NOT part
+        # of clash_error_score, so it can never increase the switch score.
         stream_count = sum(int(counts.get(k,0)) for k in
-                           ("broken_pipe","websocket_handshake","connection_reset"))
+                           ("broken_pipe","websocket_handshake","connection_reset",
+                            "ws_closed_after_upgrade"))
+        ws_degraded = (stream_info.get("classification") == "ws_degraded"
+                       or int(counts.get("http_fallbacks",0)) > 0)
         last_error = int(stream_info.get("last_at",0))
         # Inform about failed authenticated Codex streaming independently of
         # public edge availability. NEVER increase the automatic switch score.
         if (stream_info.get("state")=="ok" and stream_count and
                 0 <= time.time()-last_error <= 1800):
             issues.append({"category":"codex_stream",
-                           "title":"Codex 近30分钟响应流中断",
+                           "title":("Codex WebSocket 传输异常，已回退 HTTP" if ws_degraded
+                                    else "Codex 近30分钟响应流中断"),
                            "count":stream_count,"last_seen":last_error})
             issues = sorted(issues,key=lambda x:x["last_seen"],reverse=True)[:6]
         observed = next(
@@ -1308,6 +1497,33 @@ class Guardian:
             deep={"source":"bounded_public_tls_probes","state":"pending_or_stale",
                   "targets":[],"limitations":"no_authenticated_computer_use_test"}
         deep["running"]=deep_running
+        with self.upload_probe_lock:
+            upload = dict(self.upload_probe_result)
+            upload_running = self.upload_probe_running
+        upload_when = int(upload.get("at", 0))
+        if upload_when <= 0 or not (0 <= time.time() - upload_when
+                                    <= max(1800, 3 * int(self.config.get("upload_probe_interval_seconds", 900)))):
+            upload = {"source": "bounded_upload_probe", "state": "pending_or_stale", "kbps": 0.0}
+        upload["running"] = upload_running
+        with self.node_name_lock:
+            node_info = dict(self.node_name_result)
+        if upload.get("state") == "ok":
+            upload["node"] = str(node_info.get("name", "") or "")
+        try:
+            if (upload.get("state") == "ok" and observed is not None
+                    and getattr(observed, "egress_ip", "")):
+                upload_history = record_upload_sample(
+                    ip=observed.egress_ip,
+                    country=observed.egress_country or "",
+                    colo=observed.egress_colo or "",
+                    kbps=float(upload.get("kbps") or 0),
+                    at=int(upload.get("at") or time.time()),
+                    node=str(node_info.get("name", "") or ""))
+            else:
+                upload_history = _load_upload_history()
+        except (OSError, ValueError, TypeError):
+            upload_history = []
+        upload_advice = upload_recommendation(upload_history, upload, observed)
         now=time.time()
         workflow_axes=evaluate_workflow_health(now=now,healthy=healthy,
                          proxy_available=proxy_available,deep=deep,stream=stream_info,
@@ -1377,6 +1593,10 @@ class Guardian:
             "computer_use_observation": computer_use,
             "workflow_timeline": timeline,
             "deep_connection_diagnostics": deep,
+            "upload_probe": upload,
+            "upload_node_history": upload_history,
+            "shadowrocket_node": node_info,
+            "upload_recommendation": upload_advice,
             "automatic_control_enabled": bool(self.config.get("automatic_control_enabled",False)),
             "tunnel_recovery_enabled": bool(self.config.get("tunnel_recovery_enabled",False)),
             "proxy_client": self.active_backend,
@@ -1763,6 +1983,8 @@ class Guardian:
         if not proxy_available:
             self.maybe_begin_deep_probe(False)
             self.maybe_begin_codex_stream()
+            self.maybe_begin_upload_probe()
+            self.maybe_begin_node_name()
         tunnel_stop_reason = "none"
         if not proxy_available and self.active_backend in ("clash","system_proxy","system_unresolved"):
             # Never launch Shadowrocket to 'repair' an absent Clash listener.
@@ -1842,6 +2064,8 @@ class Guardian:
         self.observe_edge_incident(results, healthy)
         self.maybe_begin_ai_matrix(healthy)
         self.maybe_begin_deep_probe(healthy)
+        self.maybe_begin_upload_probe()
+        self.maybe_begin_node_name()
         self.maybe_begin_native_proxy_log()
         self.maybe_begin_codex_stream()
         log_failures = self.log_watcher.read_new_failures()

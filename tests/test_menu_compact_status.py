@@ -10,7 +10,7 @@ class MenuCompactStatusTests(unittest.TestCase):
     def test_card_is_narrow_and_dividers_are_symmetric(self):
         self.assertIn('let w: CGFloat = 340', menu)
         self.assertIn('width: view.bounds.width - 40', menu)
-        self.assertIn('width: w - 36, height: 106', menu)
+        self.assertIn('width: w - 36, height: 104', menu)
         self.assertIn('width: w - 40, height: 18', menu)
         # The live AX menu and the custom card are each exactly 340pt wide.
         # Each right edge must land 20pt before the actual menu boundary.
